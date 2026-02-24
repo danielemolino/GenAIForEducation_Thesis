@@ -45,10 +45,12 @@ OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 ASSETS_ROOT = Path(__file__).resolve().parent / "simulation_assets"
 ORTHANC_INSTANCES_URL = "http://localhost:8042/instances"
 ORTHANC_BASIC_AUTH = base64.b64encode(b"orthanc:orthanc").decode("ascii")
+EMPTY_GENERATIVE_STUDY_UID = "1.2.826.0.1.3680043.8.498.92334923612841918328708913924036869452"
 
 _process_is_running = False
 _progress_text = "Idle"
 _state_lock = threading.Lock()
+_bootstrap_lock = threading.Lock()
 _text2ct_cache_lock = threading.Lock()
 _text2ct_model_cache: dict = {"key": None, "bundle": None}
 
@@ -798,6 +800,92 @@ def _upload_folder_to_orthanc(folder: Path) -> List[dict]:
     return upload_results
 
 
+def _orthanc_find_study_by_uid(study_instance_uid: str) -> dict | None:
+    payload = {
+        "Level": "Study",
+        "Expand": True,
+        "Query": {
+            "StudyInstanceUID": study_instance_uid,
+        },
+    }
+    req = urlrequest.Request(
+        "http://localhost:8042/tools/find",
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Basic {ORTHANC_BASIC_AUTH}",
+        },
+    )
+    with urlrequest.urlopen(req, timeout=15) as resp:
+        found = json.loads(resp.read().decode("utf-8"))
+        if isinstance(found, list) and found:
+            return found[0]
+    return None
+
+
+def _create_empty_xray_placeholder_dicom(output_file: Path, study_instance_uid: str) -> Path:
+    now = datetime.now()
+    file_meta = Dataset()
+    file_meta.MediaStorageSOPClassUID = DigitalXRayImageStorageForPresentation
+    file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    file_meta.ImplementationClassUID = generate_uid()
+
+    ds = FileDataset(str(output_file), {}, file_meta=file_meta, preamble=b"\0" * 128)
+    ds.is_little_endian = True
+    ds.is_implicit_VR = False
+
+    pixels = np.zeros((512, 512), dtype=np.uint16)
+    ds.SOPClassUID = DigitalXRayImageStorageForPresentation
+    ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+    ds.PatientName = "GENAI^PLACEHOLDER"
+    ds.PatientID = "GENAI0001"
+    ds.StudyInstanceUID = study_instance_uid
+    ds.SeriesInstanceUID = generate_uid()
+    ds.StudyID = "GENAI_EMPTY"
+    ds.Modality = "DX"
+    ds.SeriesDescription = "GenerativeAI Placeholder"
+    ds.StudyDescription = "GenerativeAI Placeholder (Hidden)"
+    ds.AccessionNumber = "GENAIEMPTY"
+    ds.StudyDate = now.strftime("%Y%m%d")
+    ds.StudyTime = now.strftime("%H%M%S")
+    ds.SeriesDate = ds.StudyDate
+    ds.SeriesTime = ds.StudyTime
+    ds.ContentDate = ds.StudyDate
+    ds.ContentTime = ds.StudyTime
+    ds.SamplesPerPixel = 1
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.Rows = int(pixels.shape[0])
+    ds.Columns = int(pixels.shape[1])
+    ds.BitsAllocated = 16
+    ds.BitsStored = 16
+    ds.HighBit = 15
+    ds.PixelRepresentation = 0
+    ds.WindowWidth = 2000
+    ds.WindowCenter = 1000
+    ds.PixelData = pixels.tobytes()
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    ds.save_as(str(output_file), write_like_original=False)
+    return output_file
+
+
+def _upload_single_dicom_to_orthanc(dcm_file: Path) -> dict:
+    dicom_bytes = dcm_file.read_bytes()
+    req = urlrequest.Request(
+        ORTHANC_INSTANCES_URL,
+        data=dicom_bytes,
+        method="POST",
+        headers={
+            "Content-Type": "application/dicom",
+            "Authorization": f"Basic {ORTHANC_BASIC_AUTH}",
+        },
+    )
+    with urlrequest.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -811,6 +899,37 @@ def status():
 @app.get("/progress")
 def progress():
     return _get_progress()
+
+
+@app.post("/bootstrap/generative-ai-empty-study")
+def ensure_empty_generative_study():
+    try:
+        with _bootstrap_lock:
+            existing = _orthanc_find_study_by_uid(EMPTY_GENERATIVE_STUDY_UID)
+            if existing:
+                return {
+                    "status": "exists",
+                    "studyInstanceUID": EMPTY_GENERATIVE_STUDY_UID,
+                    "orthancStudyID": existing.get("ID"),
+                }
+
+            out_file = OUTPUT_ROOT / "bootstrap" / "generation_empty_file.dcm"
+            generated = _create_empty_xray_placeholder_dicom(out_file, EMPTY_GENERATIVE_STUDY_UID)
+            uploaded = _upload_single_dicom_to_orthanc(generated)
+            return {
+                "status": "created",
+                "studyInstanceUID": EMPTY_GENERATIVE_STUDY_UID,
+                "uploadResult": uploaded,
+                "filePath": str(generated),
+            }
+    except urlerror.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Orthanc bootstrap failed: {exc.code} {detail}"},
+        )
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": str(exc)})
 
 
 @app.post("/files/{file_id}")

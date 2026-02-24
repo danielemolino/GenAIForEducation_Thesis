@@ -1,0 +1,41 @@
+import numpy as np
+from pydicom.dataset import Dataset, FileDataset
+from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+import datetime
+
+filename = "black_xray.dcm"
+
+file_meta = Dataset()
+file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.1"  # CR Image Storage
+file_meta.MediaStorageSOPInstanceUID = generate_uid()
+file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+file_meta.ImplementationClassUID = generate_uid()
+
+ds = FileDataset(filename, {}, file_meta=file_meta, preamble=b"\0" * 128)
+ds.is_little_endian = True
+ds.is_implicit_VR = False
+
+now = datetime.datetime.now()
+ds.PatientName = "GENAI^PLACEHOLDER"
+ds.PatientID = "GENAI0001"
+ds.StudyInstanceUID = generate_uid()
+ds.SeriesInstanceUID = generate_uid()
+ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
+ds.StudyDate = now.strftime("%Y%m%d")
+ds.StudyTime = now.strftime("%H%M%S")
+ds.Modality = "CR"
+
+arr = np.zeros((512, 512), dtype=np.uint16)
+ds.Rows, ds.Columns = arr.shape
+ds.SamplesPerPixel = 1
+ds.PhotometricInterpretation = "MONOCHROME2"
+ds.BitsAllocated = 16
+ds.BitsStored = 16
+ds.HighBit = 15
+ds.PixelRepresentation = 0
+ds.PixelData = arr.tobytes()
+
+ds.save_as(filename)
+print("Creato:", filename)
+print("StudyInstanceUID:", ds.StudyInstanceUID)

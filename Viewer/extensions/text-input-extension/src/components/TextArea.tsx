@@ -1,21 +1,62 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-function TextArea({ servicesManager }) {
+function TextArea({ servicesManager, showPrompt = true }) {
   const { displaySetService, viewportGridService } = servicesManager.services;
 
   const [orthancStudyID, setOrthancStudyID] = useState('');
   const [activeStudyInstanceUID, setActiveStudyInstanceUID] = useState('');
   const [activeSeriesInstanceUID, setActiveSeriesInstanceUID] = useState('');
+  const [reportPromptData, setReportPromptData] = useState('');
   const [reportFindingsData, setReportFindingsData] = useState('');
   const [reportImpressionsData, setReportImpressionsData] = useState('');
+  const [reportGroupData, setReportGroupData] = useState('None');
   const [isSaving, setIsSaving] = useState(false);
   const [status, setStatus] = useState('');
   const loadRequestRef = useRef(0);
 
   const orthancAuth = `Basic ${window.btoa('orthanc:orthanc')}`;
   const METADATA_KEYS = {
+    Prompt: ['Prompt', '1026'],
     Findings: ['Findings', '1024'],
     Impressions: ['Impressions', '1025'],
+  };
+  const LOCAL_GROUPS_STORAGE_KEY = 'studyGroupByUID';
+  const GENERATIVE_AI_PLACEHOLDER_STUDY_UID =
+    '1.2.826.0.1.3680043.8.498.92334923612841918328708913924036869452';
+
+  const getLocalStudyGroup = studyInstanceUID => {
+    if (!studyInstanceUID) {
+      return 'None';
+    }
+    try {
+      const raw = localStorage.getItem(LOCAL_GROUPS_STORAGE_KEY);
+      if (!raw) {
+        return 'None';
+      }
+      const map = JSON.parse(raw);
+      const value = map?.[studyInstanceUID];
+      return value === 'A' || value === 'B' ? value : 'None';
+    } catch (error) {
+      return 'None';
+    }
+  };
+
+  const setLocalStudyGroup = (studyInstanceUID, groupValue) => {
+    if (!studyInstanceUID) {
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(LOCAL_GROUPS_STORAGE_KEY);
+      const map = raw ? JSON.parse(raw) : {};
+      if (groupValue === 'A' || groupValue === 'B') {
+        map[studyInstanceUID] = groupValue;
+      } else {
+        delete map[studyInstanceUID];
+      }
+      localStorage.setItem(LOCAL_GROUPS_STORAGE_KEY, JSON.stringify(map));
+    } catch (error) {
+      // Ignore storage errors (private mode/quota/etc.).
+    }
   };
 
   const orthancFetch = async ({ path, method = 'GET', body = null, contentType = 'text/plain' }) => {
@@ -56,7 +97,11 @@ function TextArea({ servicesManager }) {
   const getActiveDisplaySet = () => {
     const activeViewportId = viewportGridService.getActiveViewportId();
     const viewportState = viewportGridService.getState();
-    const activeViewport = viewportState?.viewports?.get(activeViewportId);
+    const viewports = viewportState?.viewports;
+    const activeViewport =
+      typeof viewports?.get === 'function'
+        ? viewports.get(activeViewportId)
+        : viewports?.[activeViewportId];
     const activeDisplaySetUID = activeViewport?.displaySetInstanceUIDs?.[0];
 
     if (activeDisplaySetUID) {
@@ -65,6 +110,15 @@ function TextArea({ servicesManager }) {
 
     const activeDisplaySets = displaySetService.getActiveDisplaySets();
     return activeDisplaySets?.[0];
+  };
+  const getStudyUIDFromUrl = () => {
+    try {
+      const currentUrl = new URL(window.location.href);
+      const studyUIDs = currentUrl.searchParams.getAll('StudyInstanceUIDs');
+      return studyUIDs?.[0] || '';
+    } catch (error) {
+      return '';
+    }
   };
 
   const getOrthancStudyID = async studyInstanceUID => {
@@ -196,6 +250,50 @@ function TextArea({ servicesManager }) {
     }
   };
 
+  const getOrthancSeriesID = async seriesInstanceUID => {
+    if (!seriesInstanceUID) {
+      return null;
+    }
+
+    try {
+      const lookupResponse = await orthancFetch({
+        path: '/tools/lookup',
+        method: 'POST',
+        body: seriesInstanceUID,
+      });
+
+      if (lookupResponse?.ok) {
+        const lookupData = await lookupResponse.json();
+        const seriesMatch = Array.isArray(lookupData)
+          ? lookupData.find(item => String(item?.Type || '').toLowerCase() === 'series')
+          : null;
+        if (seriesMatch?.ID) {
+          return seriesMatch.ID;
+        }
+      }
+
+      const findResponse = await orthancFetch({
+        path: '/tools/find',
+        method: 'POST',
+        contentType: 'application/json',
+        body: JSON.stringify({
+          Level: 'Series',
+          Expand: true,
+          Query: { SeriesInstanceUID: seriesInstanceUID },
+        }),
+      });
+
+      if (!findResponse?.ok) {
+        return null;
+      }
+
+      const findData = await findResponse.json();
+      return findData?.[0]?.ID || null;
+    } catch (error) {
+      return null;
+    }
+  };
+
   const resolveInternalStudyId = async studyInstanceUID => {
     const id = await getOrthancStudyID(studyInstanceUID);
     if (!id) {
@@ -224,7 +322,7 @@ function TextArea({ servicesManager }) {
   };
 
   const getMetadataOfStudy = async (studyID, type) => {
-    if (!studyID || !['Findings', 'Impressions'].includes(type)) {
+    if (!studyID || !['Prompt', 'Findings', 'Impressions'].includes(type)) {
       return '';
     }
 
@@ -249,6 +347,29 @@ function TextArea({ servicesManager }) {
     }
 
     return '';
+  };
+
+  const getMetadataOfSeries = async (seriesID, type) => {
+    if (!seriesID || type !== 'SeriesPrompt') {
+      return '';
+    }
+
+    const response = await orthancFetch({
+      path: `/series/${seriesID}/metadata/${type}`,
+      method: 'GET',
+    });
+
+    if (!response?.ok) {
+      return '';
+    }
+
+    const text = (await response.text()) || '';
+    const trimmed = text.trim();
+    if (/^<!doctype html/i.test(trimmed) || /^<html/i.test(trimmed)) {
+      return '';
+    }
+
+    return text;
   };
 
   const addMetadataToStudy = async (studyID, data, type) => {
@@ -279,52 +400,74 @@ function TextArea({ servicesManager }) {
   };
 
   const loadReportForActiveStudy = useCallback(async () => {
-    const requestId = ++loadRequestRef.current;
-    const activeDisplaySet = getActiveDisplaySet();
-    const studyInstanceUID = activeDisplaySet?.StudyInstanceUID;
-    const seriesInstanceUID = activeDisplaySet?.SeriesInstanceUID;
+    try {
+      const requestId = ++loadRequestRef.current;
+      const activeDisplaySet = getActiveDisplaySet();
+      const isGenerativeRoute = window.location.pathname.includes('/generative-ai/');
+      const urlStudyUID = getStudyUIDFromUrl();
+      const studyInstanceUID = isGenerativeRoute
+        ? urlStudyUID || activeDisplaySet?.StudyInstanceUID
+        : activeDisplaySet?.StudyInstanceUID || urlStudyUID;
+      const seriesInstanceUID = activeDisplaySet?.SeriesInstanceUID;
+      const isPlaceholderStudy = studyInstanceUID === GENERATIVE_AI_PLACEHOLDER_STUDY_UID;
 
-    // Reset immediately to avoid showing stale text from previously selected study
-    // while async lookups are still running.
-    setReportFindingsData('');
-    setReportImpressionsData('');
-    setStatus('');
+      // Reset immediately to avoid showing stale text from previously selected study
+      // while async lookups are still running.
+      setReportPromptData('');
+      setReportFindingsData('');
+      setReportImpressionsData('');
+      setReportGroupData('None');
+      setStatus('');
 
-    setActiveStudyInstanceUID(studyInstanceUID || '');
-    setActiveSeriesInstanceUID(seriesInstanceUID || '');
+      setActiveStudyInstanceUID(studyInstanceUID || '');
+      setActiveSeriesInstanceUID(seriesInstanceUID || '');
 
-    if (!studyInstanceUID && !seriesInstanceUID) {
-      setOrthancStudyID('');
-      setStatus('Select an image to load report.');
-      return;
+      if (!studyInstanceUID && !seriesInstanceUID) {
+        setOrthancStudyID('');
+        setStatus('Select an image to load report.');
+        return;
+      }
+
+      // Placeholder study must always open with empty report fields.
+      if (isPlaceholderStudy) {
+        setOrthancStudyID('');
+        setReportGroupData('None');
+        return;
+      }
+
+      const seriesID = await getOrthancSeriesID(seriesInstanceUID);
+
+      let studyID = await resolveInternalStudyId(studyInstanceUID);
+      if (!studyID && !isGenerativeRoute) {
+        studyID = await getOrthancStudyIdFromSeries(seriesInstanceUID);
+      }
+      setOrthancStudyID(studyID || '');
+
+      if (!studyID) {
+        setStatus('Unable to resolve study in Orthanc.');
+        return;
+      }
+
+      const [studyPrompt, seriesPrompt, findings, impressions] = await Promise.all([
+        getMetadataOfStudy(studyID, 'Prompt'),
+        getMetadataOfSeries(seriesID, 'SeriesPrompt'),
+        getMetadataOfStudy(studyID, 'Findings'),
+        getMetadataOfStudy(studyID, 'Impressions'),
+      ]);
+
+      // Ignore stale async completion from older viewport/study selections.
+      if (requestId !== loadRequestRef.current) {
+        return;
+      }
+
+      setReportPromptData(studyPrompt || seriesPrompt || '');
+      setReportFindingsData(findings || '');
+      setReportImpressionsData(impressions || '');
+      setReportGroupData(getLocalStudyGroup(studyInstanceUID));
+      setStatus('');
+    } catch (error) {
+      setStatus('Metadata panel error (viewer rendering continues).');
     }
-
-    // Prefer resolving by active Series -> ParentStudy to ensure we target
-    // the exact generated object currently displayed.
-    let studyID = await getOrthancStudyIdFromSeries(seriesInstanceUID);
-    if (!studyID) {
-      studyID = await resolveInternalStudyId(studyInstanceUID);
-    }
-    setOrthancStudyID(studyID || '');
-
-    if (!studyID) {
-      setStatus('Unable to resolve study in Orthanc.');
-      return;
-    }
-
-    const [findings, impressions] = await Promise.all([
-      getMetadataOfStudy(studyID, 'Findings'),
-      getMetadataOfStudy(studyID, 'Impressions'),
-    ]);
-
-    // Ignore stale async completion from older viewport/study selections.
-    if (requestId !== loadRequestRef.current) {
-      return;
-    }
-
-    setReportFindingsData(findings || '');
-    setReportImpressionsData(impressions || '');
-    setStatus('');
   }, [displaySetService, viewportGridService]);
 
   useEffect(() => {
@@ -346,24 +489,38 @@ function TextArea({ servicesManager }) {
   }, [displaySetService, viewportGridService, loadReportForActiveStudy]);
 
   const saveReport = async () => {
-    let studyID = await getOrthancStudyIdFromSeries(activeSeriesInstanceUID);
-    if (!studyID) {
-      studyID = await resolveInternalStudyId(activeStudyInstanceUID);
+    const isGenerativeRoute = window.location.pathname.includes('/generative-ai/');
+    const urlStudyUID = getStudyUIDFromUrl();
+    const targetStudyUID = (isGenerativeRoute ? urlStudyUID : '') || activeStudyInstanceUID || urlStudyUID;
+    const isPlaceholderStudy = targetStudyUID === GENERATIVE_AI_PLACEHOLDER_STUDY_UID;
+
+    if (isPlaceholderStudy) {
+      setStatus('Report disabled for placeholder study.');
+      return;
     }
-    if (!studyID) {
+
+    let targetStudyID = await resolveInternalStudyId(
+      targetStudyUID
+    );
+    if (!targetStudyID && !isGenerativeRoute) {
+      targetStudyID = await getOrthancStudyIdFromSeries(activeSeriesInstanceUID);
+    }
+
+    if (!targetStudyID) {
       setStatus('Unable to save: study not found in Orthanc.');
       return;
     }
-    setOrthancStudyID(studyID);
+    setOrthancStudyID(targetStudyID);
 
     setIsSaving(true);
     setStatus('');
 
     try {
       const [f, i] = await Promise.all([
-        addMetadataToStudy(studyID, reportFindingsData, 'Findings'),
-        addMetadataToStudy(studyID, reportImpressionsData, 'Impressions'),
+        addMetadataToStudy(targetStudyID, reportFindingsData, 'Findings'),
+        addMetadataToStudy(targetStudyID, reportImpressionsData, 'Impressions'),
       ]);
+      setLocalStudyGroup(targetStudyUID, reportGroupData);
 
       if (f.ok && i.ok) {
         setStatus('Report saved successfully.');
@@ -386,6 +543,19 @@ function TextArea({ servicesManager }) {
   return (
     <div className="bg-black">
       <div className="bg-primary-dark flex flex-col justify-center p-4">
+        {showPrompt ? (
+          <>
+            <div className="text-primary-main font-bold mb-2">Generation Prompt</div>
+            <div
+              className={`mb-4 text-sm whitespace-pre-wrap break-words min-h-[24px] ${
+                reportPromptData ? 'text-white' : 'text-[#94a3b8]'
+              }`}
+            >
+              {reportPromptData || 'Not available'}
+            </div>
+          </>
+        ) : null}
+
         <div className="text-primary-main font-bold mb-2">Findings</div>
         <textarea
           rows={10}
@@ -403,6 +573,17 @@ function TextArea({ servicesManager }) {
           onChange={event => setReportImpressionsData(event.target.value)}
           placeholder="Enter impressions..."
         />
+
+        <div className="text-primary-main font-bold mt-4 mb-2">Group</div>
+        <select
+          className="text-white text-[14px] border-primary-main bg-black transition duration-300 appearance-none border border-inputfield-main focus:border-inputfield-focus focus:outline-none disabled:border-inputfield-disabled rounded w-full py-2 px-3 text-sm leading-tight"
+          value={reportGroupData}
+          onChange={event => setReportGroupData(event.target.value)}
+        >
+          <option value="None">None</option>
+          <option value="A">A</option>
+          <option value="B">B</option>
+        </select>
 
         <div className="flex justify-center p-4 bg-primary-dark">
           <button

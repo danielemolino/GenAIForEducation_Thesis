@@ -94,11 +94,15 @@ function Local({ modePath }: LocalProps) {
       }
     }
 
+    // If no mode path is provided, open directly in the local viewer mode.
+    // Routing to "/" no longer works because "/" is now the Welcome page.
+    const resolvedModePath = modePath && modePath.trim() ? modePath : 'viewer/dicomlocal';
+
     // Todo: navigate to work list and let user select a mode
     studies.forEach(id => query.append('StudyInstanceUIDs', id));
     query.append('datasources', 'dicomlocal');
 
-    navigate(`/${modePath}?${decodeURIComponent(query.toString())}`);
+    navigate(`/${resolvedModePath}?${decodeURIComponent(query.toString())}`);
   };
 
   // Set body style

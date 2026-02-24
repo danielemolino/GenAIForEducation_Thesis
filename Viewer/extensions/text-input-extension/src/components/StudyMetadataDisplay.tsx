@@ -2,6 +2,40 @@ import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import UserFeedback from './UserFeedback';
 
+const orthancAuth = `Basic ${window.btoa('orthanc:orthanc')}`;
+
+const orthancFetch = async ({ path, method = 'GET', body = null, contentType = 'application/json' }) => {
+  const attempts = [
+    { withAuth: true },
+    { withAuth: false },
+  ];
+
+  let lastResponse = null;
+  for (const attempt of attempts) {
+    const headers = { 'Content-Type': contentType };
+    if (attempt.withAuth) {
+      headers.Authorization = orthancAuth;
+    }
+
+    try {
+      const response = await fetch(`/pacs${path}`, {
+        method,
+        headers,
+        body,
+      });
+      lastResponse = response;
+      if ([401, 403].includes(response.status)) {
+        continue;
+      }
+      return response;
+    } catch (error) {
+      // try next auth mode
+    }
+  }
+
+  return lastResponse;
+};
+
 const StudyMetadataDisplay = ({
     description,
     onClick,
@@ -61,12 +95,10 @@ StudyMetadataDisplay.propTypes = {
 
 const _getPromptMetadataOfSeries = async (seriesID) => {
   try {
-    const url = `/pacs/series/${seriesID}/metadata/SeriesPrompt`;
-    const response = await fetch(url, {
+    const response = await orthancFetch({
+      path: `/series/${seriesID}/metadata/SeriesPrompt`,
       method: 'GET',
-      headers: {
-        'Content-Type': 'text/plain'  // Ensure the server expects text/plain content type
-      }
+      contentType: 'text/plain',
     });
 
     if (!response.ok) {
@@ -83,11 +115,10 @@ const _getPromptMetadataOfSeries = async (seriesID) => {
 };
 const _getOrthancSeriesID = async (seriesInstanceUID) => {
   try {
-      const response = await fetch('/pacs/tools/find', {
+      const response = await orthancFetch({
+        path: '/tools/find',
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        contentType: 'application/json',
         body: JSON.stringify({
           Level: 'Series',
           Expand: true,

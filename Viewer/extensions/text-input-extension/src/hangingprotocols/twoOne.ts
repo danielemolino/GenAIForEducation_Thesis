@@ -1,11 +1,10 @@
 const twoOneProtocol: Types.HangingProtocol.Protocol = {
     /**
-     * Default is 2x1 and if there is less then one series to show then it is 1x1
-     * 
+     * Forced single viewport for Generative AI mode.
      */
     id: 'twoOneGenAI',
-    description: '2x1 grid layout',
-    name: '2x1',
+    description: '1x1 grid layout',
+    name: '1x1',
     protocolMatchingRules: [
       {
         id: 'OneOrMoreSeries',
@@ -51,62 +50,21 @@ const twoOneProtocol: Types.HangingProtocol.Protocol = {
       ],
     },
     stages: [
-      // 2x1 stage
-      {
-        id: '2x1',
-        stageActivation: {
-          enabled: {
-            minViewportsMatched: 2,
-          },
-        },
-        viewportStructure: {
-          layoutType: 'grid',
-          properties: {
-            rows: 1,
-            columns: 2,
-          },
-        },
-        viewports: [
-          {
-            viewportOptions: {
-              toolGroupId: 'default',
-              allowUnmatchedView: true,
-            },
-            displaySets: [
-              {
-                id: 'defaultDisplaySetId',
-              },
-            ],
-          },
-          {
-            viewportOptions: {
-              toolGroupId: 'default',
-              allowUnmatchedView: true,
-            },
-            displaySets: [
-              {
-                matchedDisplaySetsIndex: 1,
-                id: 'defaultDisplaySetId',
-              },
-            ],
-          },
-        ],
-      },
-    // 1x1 stage
+    // 1x1 stage (forced)
     {
-      id: '1x1', // Identifier for the 1x1 stage
+      id: '1x1',
       requiredViewports: 1,
       preferredViewports: 1,
       stageActivation: {
         enabled: {
-          minViewportsMatched: 1, // Activate if at least 1 viewport is matched
+          minViewportsMatched: 1,
         },
       },
       viewportStructure: {
         layoutType: 'grid',
         properties: {
           rows: 1,
-          columns: 1, // 1x1 grid layout
+          columns: 1,
         },
       },
       viewports: [

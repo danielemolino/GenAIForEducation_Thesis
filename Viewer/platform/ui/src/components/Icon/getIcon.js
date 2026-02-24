@@ -434,6 +434,10 @@ function addIcon(iconName, iconSVG) {
  * return `null`
  */
 export default function getIcon(key, props) {
+  if (key === 'none') {
+    return null;
+  }
+
   const icon = ICONS[key];
 
   if (!key || !icon) {

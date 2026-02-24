@@ -1,6 +1,5 @@
 import getStudies from './studiesList';
 import { DicomMetadataStore, log } from '@ohif/core';
-import isSeriesFilterUsed from '../../utils/isSeriesFilterUsed';
 
 import { utils, Enums } from '@ohif/core';
 
@@ -19,8 +18,7 @@ export async function defaultRouteInit(
   { servicesManager, studyInstanceUIDs, dataSource, filters, appConfig }: withAppTypes,
   hangingProtocolId
 ) {
-  const { displaySetService, hangingProtocolService, uiNotificationService, customizationService } =
-    servicesManager.services;
+  const { displaySetService, hangingProtocolService, customizationService } = servicesManager.services;
   /**
    * Function to apply the hanging protocol when the minimum number of display sets were
    * received or all display sets retrieval were completed
@@ -45,28 +43,10 @@ export async function defaultRouteInit(
   }
 
   const unsubscriptions = [];
-  const issuedWarningSeries = [];
   const { unsubscribe: instanceAddedUnsubscribe } = DicomMetadataStore.subscribe(
     DicomMetadataStore.EVENTS.INSTANCES_ADDED,
     function ({ StudyInstanceUID, SeriesInstanceUID, madeInClient = false }) {
       const seriesMetadata = DicomMetadataStore.getSeries(StudyInstanceUID, SeriesInstanceUID);
-
-      // checks if the series filter was used, if it exists
-      const seriesInstanceUIDs = filters?.seriesInstanceUID;
-      if (
-        seriesInstanceUIDs?.length &&
-        !isSeriesFilterUsed(seriesMetadata.instances, filters) &&
-        !issuedWarningSeries.includes(seriesInstanceUIDs[0])
-      ) {
-        // stores the series instance filter so it shows only once the warning
-        issuedWarningSeries.push(seriesInstanceUIDs[0]);
-        uiNotificationService.show({
-          title: 'Series filter',
-          message: `Each of the series in filter: ${seriesInstanceUIDs} are not part of the current study. The entire study is being displayed`,
-          type: 'error',
-          duration: 7000,
-        });
-      }
 
       displaySetService.makeDisplaySets(seriesMetadata.instances, madeInClient);
     }

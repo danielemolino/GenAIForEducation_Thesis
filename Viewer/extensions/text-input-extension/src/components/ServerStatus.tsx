@@ -34,7 +34,7 @@ const ServerStatus = ({modelIsRunning,dataIsUploading, isServerRunning, serverUr
     const interval = setInterval(getServerLog, 5000); // Check every 5 seconds
 
     return () => clearInterval(interval); // Cleanup on component unmount
-  }, [modelIsRunning, serverUrl]);
+  }, [modelIsRunning]);
 
 
   

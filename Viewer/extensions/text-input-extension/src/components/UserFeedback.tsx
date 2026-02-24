@@ -3,6 +3,40 @@ import PropTypes from 'prop-types';
 import UserFeedbackRow from './UserFeedbackRow';
 import debounce from 'lodash.debounce';
 
+const orthancAuth = `Basic ${window.btoa('orthanc:orthanc')}`;
+
+const orthancFetch = async ({ path, method = 'GET', body = null, contentType = 'text/plain' }) => {
+  const attempts = [
+    { withAuth: true },
+    { withAuth: false },
+  ];
+
+  let lastResponse = null;
+  for (const attempt of attempts) {
+    const headers = { 'Content-Type': contentType };
+    if (attempt.withAuth) {
+      headers.Authorization = orthancAuth;
+    }
+
+    try {
+      const response = await fetch(`/pacs${path}`, {
+        method,
+        headers,
+        body,
+      });
+      lastResponse = response;
+      if ([401, 403].includes(response.status)) {
+        continue;
+      }
+      return response;
+    } catch (error) {
+      // try next auth mode
+    }
+  }
+
+  return lastResponse;
+};
+
 const UserFeedback = ({ seriesID }) => {
   const [feedback, setFeedback] = useState({
     'Anatomically realistic?': { thumbsUp: false, thumbsDown: false },
@@ -65,13 +99,11 @@ const UserFeedback = ({ seriesID }) => {
         return;
     }
     try {
-        const url = `/pacs/series/${seriesID}/metadata/${type}`;
-        const response = await fetch(url, {
+        const response = await orthancFetch({
+            path: `/series/${seriesID}/metadata/${type}`,
             method: 'PUT',
-            headers: {
-                'Content-Type': 'text/plain'  
-            },
-            body: data 
+            contentType: 'text/plain',
+            body: data
         });
 
         if (!response.ok) {
@@ -98,13 +130,10 @@ const getMetadataOfSeries = async (seriesID, type) => {
         return;
     }
     try {
-        const url = `/pacs/series/${seriesID}/metadata/${type}`;
-        console.log("url", url);
-        const response = await fetch(url, {
+        const response = await orthancFetch({
+            path: `/series/${seriesID}/metadata/${type}`,
             method: 'GET',
-            headers: {
-                'Content-Type': 'text/plain'  // Ensure the server expects text/plain content type
-            }
+            contentType: 'text/plain'
         });
 
         if (!response.ok) {

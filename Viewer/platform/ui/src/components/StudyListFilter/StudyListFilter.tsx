@@ -56,14 +56,65 @@ const StudyListFilter = ({
                 )}
                 {generationTo && (
                   <Link
-                    className="text-primary-active flex cursor-pointer items-center gap-2 self-center text-lg font-semibold"
+                    className="text-primary-active flex cursor-pointer items-center gap-2 self-center text-lg font-semibold whitespace-nowrap"
                     onClick={onGenerationClick}
                     to={generationTo}
                   >
-                    <Icon name="launch-arrow"></Icon>
-                    <span>Generation</span>
+                    <svg
+                      width="20"
+                      height="20"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      xmlns="http://www.w3.org/2000/svg"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M12 3L13.8 8.2L19 10L13.8 11.8L12 17L10.2 11.8L5 10L10.2 8.2L12 3Z"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      <path
+                        d="M18.5 3.5L19.1 5.2L20.8 5.8L19.1 6.4L18.5 8.1L17.9 6.4L16.2 5.8L17.9 5.2L18.5 3.5Z"
+                        stroke="currentColor"
+                        strokeWidth="1.6"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                    <span>Generative AI</span>
                   </Link>
                 )}
+                <Link
+                  className="text-primary-active flex cursor-pointer items-center gap-2 self-center text-lg font-semibold whitespace-nowrap"
+                  to="/"
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M3 10.8L12 3L21 10.8V20C21 20.55 20.55 21 20 21H4C3.45 21 3 20.55 3 20V10.8Z"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M9 21V13H15V21"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  <span>Home</span>
+                </Link>
               </div>
               <div className="flex h-[34px] flex-row items-center">
                 {/* TODO revisit the completely rounded style of button used for clearing the study list filter - for now use LegacyButton*/}

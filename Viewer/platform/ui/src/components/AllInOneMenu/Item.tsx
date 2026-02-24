@@ -35,7 +35,7 @@ const Item = ({
       onMouseLeave={onMouseLeave}
     >
       {icon && <div className="pr-2">{icon}</div>}
-      <span>{label}</span>
+      <span className="whitespace-nowrap">{label}</span>
       {secondaryLabel != null && <span className="text-aqua-pale ml-[1ch]">{secondaryLabel}</span>}
       {rightIcon && <div className="ml-auto">{rightIcon}</div>}
     </div>

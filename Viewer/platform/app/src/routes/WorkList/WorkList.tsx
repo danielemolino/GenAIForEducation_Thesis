@@ -43,8 +43,16 @@ const { availableLanguages, defaultLanguage, currentLanguage } = i18n;
 
 const seriesInStudiesMap = new Map();
 const XRAY_MODALITIES = new Set(['CR', 'DX']);
-const XRAY_ALLOWED_ROUTE_NAMES = new Set(['viewer', 'generative-ai']);
-const CT_ALLOWED_ROUTE_NAMES = new Set(['viewer', 'segmentation', 'generative-ai']);
+const XRAY_ALLOWED_ROUTE_NAMES = new Set(['viewer']);
+const CT_ALLOWED_ROUTE_NAMES = new Set(['viewer', 'segmentation']);
+const LOCAL_GROUPS_STORAGE_KEY = 'studyGroupByUID';
+const GENERATIVE_AI_PLACEHOLDER_STUDY_UID =
+  '1.2.826.0.1.3680043.8.498.92334923612841918328708913924036869452';
+const GENERATIVE_AI_BOOTSTRAP_BACKEND_CANDIDATES = [
+  'http://localhost:5000',
+  'http://localhost:8000',
+  'http://149.165.154.176:5000',
+];
 
 /**
  * TODO:
@@ -92,15 +100,23 @@ function WorkList({
    * Only applied if no other sorting is specified and there are less than 101 studies
    */
 
-  const canSort = studiesTotal < STUDIES_LIMIT;
+  const visibleStudies = studies.filter(
+    study => study?.studyInstanceUid !== GENERATIVE_AI_PLACEHOLDER_STUDY_UID
+  );
+  const groupFilteredStudies =
+    filterValues.group?.length > 0
+      ? visibleStudies.filter(study => filterValues.group.includes(getLocalStudyGroup(study)))
+      : visibleStudies;
+  const visibleStudiesTotal = Math.min(groupFilteredStudies.length, studiesTotal);
+  const canSort = visibleStudiesTotal < STUDIES_LIMIT;
   const shouldUseDefaultSort = sortBy === '' || !sortBy;
   const sortModifier = sortDirection === 'descending' ? 1 : -1;
   const defaultSortValues =
     shouldUseDefaultSort && canSort ? { sortBy: 'studyDate', sortDirection: 'ascending' } : {};
-  const sortedStudies = studies;
+  const sortedStudies = [...groupFilteredStudies].filter(Boolean);
 
   if (canSort) {
-    studies.sort((s1, s2) => {
+    sortedStudies.sort((s1, s2) => {
       if (shouldUseDefaultSort) {
         const ascendingSortModifier = -1;
         return _sortStringDates(s1, s2, ascendingSortModifier);
@@ -128,7 +144,7 @@ function WorkList({
   // ~ Rows & Studies
   const [expandedRows, setExpandedRows] = useState([]);
   const [studiesWithSeriesData, setStudiesWithSeriesData] = useState([]);
-  const numOfStudies = studiesTotal;
+  const numOfStudies = visibleStudiesTotal;
   const querying = useMemo(() => {
     return isLoadingData || expandedRows.length > 0;
   }, [isLoadingData, expandedRows]);
@@ -193,6 +209,8 @@ function WorkList({
         }
       } else if (key === 'modalities' && currValue.length) {
         queryString.modalities = currValue.join(',');
+      } else if (key === 'group' && currValue.length) {
+        queryString.group = currValue.join(',');
       } else if (currValue !== defaultValue) {
         queryString[key] = currValue;
       }
@@ -227,7 +245,11 @@ function WorkList({
     // Note: expanded rows index begins at 1
     for (let z = 0; z < expandedRows.length; z++) {
       const expandedRowIndex = expandedRows[z] - 1;
-      const studyInstanceUid = sortedStudies[expandedRowIndex].studyInstanceUid;
+      const expandedStudy = sortedStudies[expandedRowIndex];
+      const studyInstanceUid = expandedStudy?.studyInstanceUid;
+      if (!studyInstanceUid) {
+        continue;
+      }
 
       if (studiesWithSeriesData.includes(studyInstanceUid)) {
         continue;
@@ -252,7 +274,6 @@ function WorkList({
     const isExpanded = expandedRows.some(k => k === rowKey);
     const {
       studyInstanceUid,
-      accession,
       modalities,
       instances,
       description,
@@ -261,6 +282,7 @@ function WorkList({
       date,
       time,
     } = study;
+    const group = getLocalStudyGroup(study);
     const studyDate =
       date &&
       moment(date, ['YYYYMMDD', 'YYYY.MM.DD'], true).isValid() &&
@@ -319,8 +341,8 @@ function WorkList({
           gridCol: 3,
         },
         {
-          key: 'accession',
-          content: <TooltipClipboard>{accession}</TooltipClipboard>,
+          key: 'group',
+          content: <TooltipClipboard>{group || ''}</TooltipClipboard>,
           gridCol: 3,
         },
         {
@@ -521,6 +543,86 @@ function WorkList({
 
   const { component: dataSourceConfigurationComponent } =
     customizationService.get('ohif.dataSourceConfigurationComponent') ?? {};
+  const generationPath = `/generative-ai${dataPath || ''}`;
+  const buildGenerationSearch = (includePlaceholderStudy = true) => {
+    const query = new URLSearchParams();
+    if (filterValues.configUrl) {
+      query.append('configUrl', filterValues.configUrl);
+    }
+    if (includePlaceholderStudy) {
+      query.append('StudyInstanceUIDs', GENERATIVE_AI_PLACEHOLDER_STUDY_UID);
+    }
+    return query.toString();
+  };
+  const generationTo = `${dataPath ? '../../' : ''}${generationPath.replace(/^\//, '')}${
+    buildGenerationSearch(true) ? `?${buildGenerationSearch(true)}` : ''
+  }`;
+  const onGenerationClick = event => {
+    event.preventDefault();
+    const checkPlaceholderInOrthanc = async () => {
+      try {
+        const response = await fetch('/pacs/tools/find', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Basic ${window.btoa('orthanc:orthanc')}`,
+          },
+          body: JSON.stringify({
+            Level: 'Study',
+            Expand: true,
+            Query: {
+              StudyInstanceUID: GENERATIVE_AI_PLACEHOLDER_STUDY_UID,
+            },
+          }),
+        });
+        if (!response.ok) {
+          return false;
+        }
+        const data = await response.json();
+        return Array.isArray(data) && data.length > 0;
+      } catch (error) {
+        return false;
+      }
+    };
+
+    const bootstrapAndNavigate = async () => {
+      let bootstrapSucceeded = false;
+      for (const baseUrl of GENERATIVE_AI_BOOTSTRAP_BACKEND_CANDIDATES) {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 2500);
+          const response = await fetch(`${baseUrl}/bootstrap/generative-ai-empty-study`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          if (response.ok) {
+            bootstrapSucceeded = true;
+            break;
+          }
+        } catch (error) {
+          // Try next backend candidate.
+        }
+      }
+
+      const placeholderExists = bootstrapSucceeded || (await checkPlaceholderInOrthanc());
+      const generationSearch = buildGenerationSearch(placeholderExists);
+      const generationAbsoluteTo = `${generationPath}${generationSearch ? `?${generationSearch}` : ''}`;
+
+      try {
+        localStorage.setItem('generativeAIPlaceholderStudyUID', GENERATIVE_AI_PLACEHOLDER_STUDY_UID);
+      } catch (error) {
+        // Ignore storage errors.
+      }
+
+      navigate(generationAbsoluteTo);
+    };
+
+    bootstrapAndNavigate();
+  };
 
   return (
     <div className="flex h-screen flex-col bg-black">
@@ -541,6 +643,8 @@ function WorkList({
           clearFilters={() => setFilterValues(defaultFilterValues)}
           isFiltering={isFiltering(filterValues, defaultFilterValues)}
           onUploadClick={uploadProps ? () => show(uploadProps) : undefined}
+          onGenerationClick={onGenerationClick}
+          generationTo={generationTo}
           getDataSourceConfigurationComponent={
             dataSourceConfigurationComponent ? () => dataSourceConfigurationComponent() : undefined
           }
@@ -595,7 +699,7 @@ const defaultFilterValues = {
   },
   description: '',
   modalities: [],
-  accession: '',
+  group: [],
   sortBy: '',
   sortDirection: 'none',
   pageNumber: 1,
@@ -630,7 +734,7 @@ function _getQueryFilterValues(params) {
     },
     description: params.get('description'),
     modalities: params.get('modalities') ? params.get('modalities').split(',') : [],
-    accession: params.get('accession'),
+    group: params.get('group') ? params.get('group').split(',') : [],
     sortBy: params.get('sortby'),
     sortDirection: params.get('sortdirection'),
     pageNumber: _tryParseInt(params.get('pagenumber'), undefined),
@@ -648,17 +752,33 @@ function _getQueryFilterValues(params) {
 }
 
 function _sortStringDates(s1, s2, sortModifier) {
-  // TODO: Delimiters are non-standard. Should we support them?
-  const s1Date = moment(s1.date, ['YYYYMMDD', 'YYYY.MM.DD'], true);
-  const s2Date = moment(s2.date, ['YYYYMMDD', 'YYYY.MM.DD'], true);
+  const s1DateTimeKey = _getStudyDateTimeKey(s1);
+  const s2DateTimeKey = _getStudyDateTimeKey(s2);
 
-  if (s1Date.isValid() && s2Date.isValid()) {
-    return (s1Date.toISOString() > s2Date.toISOString() ? 1 : -1) * sortModifier;
-  } else if (s1Date.isValid()) {
+  if (s1DateTimeKey && s2DateTimeKey) {
+    return (s1DateTimeKey > s2DateTimeKey ? 1 : -1) * sortModifier;
+  } else if (s1DateTimeKey) {
     return sortModifier;
-  } else if (s2Date.isValid()) {
+  } else if (s2DateTimeKey) {
     return -1 * sortModifier;
   }
+}
+
+function _getStudyDateTimeKey(study) {
+  const normalizedDate = String(study?.date || '')
+    .replace(/\D/g, '')
+    .slice(0, 8);
+  if (normalizedDate.length !== 8) {
+    return null;
+  }
+
+  // If time is missing/partial, fall back to midnight so date ordering remains stable.
+  const normalizedTime = String(study?.time || '')
+    .replace(/\D/g, '')
+    .slice(0, 6)
+    .padEnd(6, '0');
+
+  return `${normalizedDate}${normalizedTime}`;
 }
 
 function getVisibleModesForStudy({ loadedModes = [], groupEnabledModesFirst, modalities, study }) {
@@ -698,6 +818,25 @@ function getNormalizedModalities(modalities = '') {
     .split('/')
     .map(modality => modality.trim().toUpperCase())
     .filter(Boolean);
+}
+
+function getLocalStudyGroup(study) {
+  const studyInstanceUid = study?.studyInstanceUid;
+  if (!studyInstanceUid) {
+    return 'None';
+  }
+
+  try {
+    const raw = localStorage.getItem(LOCAL_GROUPS_STORAGE_KEY);
+    if (!raw) {
+      return 'None';
+    }
+    const map = JSON.parse(raw);
+    const value = map?.[studyInstanceUid];
+    return value === 'A' || value === 'B' ? value : 'None';
+  } catch (error) {
+    return 'None';
+  }
 }
 
 export default WorkList;

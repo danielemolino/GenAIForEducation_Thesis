@@ -40,6 +40,13 @@ pip install numpy pydicom fastapi nibabel pillow uvicorn
 uvicorn main_text2ct:app --host 0.0.0.0 --port 8000 --access-log
 ```
 
+## 3b) Backend base (main.py) - alternativa
+```bash
+cd /mnt/d/GenAIforEdu/BackendModelli
+pip install numpy pydicom fastapi nibabel pillow uvicorn
+uvicorn main:app --host 0.0.0.0 --port 8000 --access-log
+```
+
 ## 4) Backend XRay (XGeM)
 ```bash
 cd /mnt/d/GenAIforEdu/BackendModelli

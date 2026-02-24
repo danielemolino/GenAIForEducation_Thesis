@@ -1,6 +1,14 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 
+const EMPTY_GENERATIVE_STUDY_UID =
+  '1.2.826.0.1.3680043.8.498.92334923612841918328708913924036869452';
+const BACKEND_CANDIDATES = [
+  'http://localhost:5000',
+  'http://localhost:8000',
+  'http://149.165.154.176:5000',
+];
+
 export default function WelcomePage() {
   const runtimeConfig = (window as any)?.config;
   const defaultDataSourceName =
@@ -9,6 +17,41 @@ export default function WelcomePage() {
     ds => ds?.sourceName === defaultDataSourceName
   );
   const activeQidoRoot = activeDataSource?.configuration?.qidoRoot || 'N/A';
+  const startUrl = `/studies?datasources=${defaultDataSourceName}`;
+
+  const ensureGenerativePlaceholder = async () => {
+    for (const baseUrl of BACKEND_CANDIDATES) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 2500);
+        const response = await fetch(`${baseUrl}/bootstrap/generative-ai-empty-study`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (response.ok) {
+          return true;
+        }
+      } catch (error) {
+        // Try the next candidate if this backend is unreachable.
+      }
+    }
+    return false;
+  };
+
+  const handleStart = () => {
+    ensureGenerativePlaceholder().catch(() => {
+      // Continue to study list even if bootstrap fails.
+    });
+    try {
+      localStorage.setItem('generativeAIPlaceholderStudyUID', EMPTY_GENERATIVE_STUDY_UID);
+    } catch (error) {
+      // Ignore storage errors.
+    }
+  };
 
   return (
     <div className="relative min-h-screen bg-[#0f1720] text-white">
@@ -25,12 +68,15 @@ export default function WelcomePage() {
           environment.
         </p>
 
-        <Link
-          to={`/studies?datasources=${defaultDataSourceName}`}
-          className="rounded bg-blue-600 px-8 py-4 text-base font-semibold uppercase tracking-wide text-white hover:bg-blue-500"
-        >
-          Start
-        </Link>
+        <div className="flex flex-wrap items-center justify-center gap-4">
+          <Link
+            to={startUrl}
+            onClick={handleStart}
+            className="rounded bg-blue-600 px-8 py-4 text-base font-semibold uppercase tracking-wide text-white hover:bg-blue-500"
+          >
+            Start
+          </Link>
+        </div>
       </div>
 
       <img

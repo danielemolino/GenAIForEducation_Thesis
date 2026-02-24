@@ -43,9 +43,16 @@ const filtersMeta = [
     gridCol: 3,
   },
   {
-    name: 'accession',
-    displayName: i18n.t('StudyList:AccessionNumber'),
-    inputType: 'Text',
+    name: 'group',
+    displayName: 'Group',
+    inputType: 'MultiSelect',
+    inputProps: {
+      options: [
+        { value: 'None', label: 'None' },
+        { value: 'A', label: 'A' },
+        { value: 'B', label: 'B' },
+      ],
+    },
     isSortable: true,
     gridCol: 3,
   },

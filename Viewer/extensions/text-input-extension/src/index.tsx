@@ -45,9 +45,9 @@ export default {
       },
       {
         name:'generative-ai-panel',
-        iconName: 'tab-studies',
+        iconName: 'none',
         iconLabel: 'Preview',
-        label: 'Generative AI',
+        label: 'Generative\u00A0AI',
         component: GenerativeAIComponent.bind(null, {
           commandsManager,
           extensionManager,

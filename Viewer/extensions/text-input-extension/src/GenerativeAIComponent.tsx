@@ -18,20 +18,20 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
     const [generatingFilePrompt, setGeneratingFilePrompt] = useState('');
     const [fileID, setFileID] = useState('');
     const [generationType, setGenerationType] = useState('');
+    const [lastGeneratedStudyForViewer, setLastGeneratedStudyForViewer] = useState('');
+    const [hasUsableInputStudy, setHasUsableInputStudy] = useState(false);
 
     const disabled = false;
     const MAX_STORED_STUDIES = 50;
-    const defaultCtServerCandidates = ['http://localhost:8000', 'http://149.165.154.176:5000'];
-    const defaultXrayServerCandidates = ['http://localhost:8001'];
-    const [ctServerUrl, setCtServerUrl] = useState(defaultCtServerCandidates[0]);
-    const [xrayServerUrl, setXrayServerUrl] = useState(defaultXrayServerCandidates[0]);
-    const [ctServerRunning, setCtServerRunning] = useState(false);
-    const [xrayServerRunning, setXrayServerRunning] = useState(false);
-    const [activeServerUrl, setActiveServerUrl] = useState(defaultCtServerCandidates[0]);
+    const GENERATIVE_AI_PLACEHOLDER_STUDY_UID =
+      '1.2.826.0.1.3680043.8.498.92334923612841918328708913924036869452';
+    const defaultServerCandidates = [
+      'http://localhost:5000',
+      'http://localhost:8000',
+      'http://149.165.154.176:5000',
+    ];
+    const [serverUrl, setServerUrl] = useState(defaultServerCandidates[0]);
     const orthancAuth = `Basic ${window.btoa('orthanc:orthanc')}`;
-    const _normalizeType = type => ((type || '').toLowerCase() === 'xrays' ? 'xray' : (type || '').toLowerCase());
-    const _getTargetServerUrl = type => (_normalizeType(type) === 'xray' ? xrayServerUrl : ctServerUrl);
-    const _getJobServerUrl = () => activeServerUrl || _getTargetServerUrl(generationType || 'ct');
 
     const _checkServerCandidate = async candidateUrl => {
       try {
@@ -55,46 +55,30 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
 
     // check server status
     useEffect(() => {
-        const resolveServer = async (currentUrl, candidates) => {
-          const uniqueCandidates = [...new Set([currentUrl, ...candidates])];
+        const checkServerStatus = async () => {
+          const uniqueCandidates = [...new Set([serverUrl, ...defaultServerCandidates])];
           for (const candidateUrl of uniqueCandidates) {
             const status = await _checkServerCandidate(candidateUrl);
             if (status.ok) {
-              return { url: candidateUrl, running: true };
+              setServerUrl(candidateUrl);
+              setIsServerRunning(true);
+              return;
             }
           }
-          return { url: currentUrl, running: false };
-        };
-
-        const checkServerStatus = async () => {
-          const ctStatus = await resolveServer(ctServerUrl, defaultCtServerCandidates);
-          setCtServerUrl(ctStatus.url);
-          setCtServerRunning(ctStatus.running);
-
-          const xrayStatus = await resolveServer(xrayServerUrl, defaultXrayServerCandidates);
-          setXrayServerUrl(xrayStatus.url);
-          setXrayServerRunning(xrayStatus.running);
-
-          const selectedType = _normalizeType(generationType || 'ct');
-          setIsServerRunning(selectedType === 'xray' ? xrayStatus.running : ctStatus.running);
+          setIsServerRunning(false);
         };
 
         checkServerStatus();
         const interval = setInterval(checkServerStatus, 50000); // Check every 50 seconds
 
         return () => clearInterval(interval); // Cleanup on component unmount
-      }, [ctServerUrl, xrayServerUrl, generationType]);
-
-      useEffect(() => {
-        const selectedType = _normalizeType(generationType || 'ct');
-        setIsServerRunning(selectedType === 'xray' ? xrayServerRunning : ctServerRunning);
-      }, [generationType, ctServerRunning, xrayServerRunning]);
+      }, []);
 
       // follow status of MedSyn: when finished download images from backend and upload to Orthanc
       useEffect(() => {
         const checkModelIsRunning = async () => {
             try {
-                const status = await _checkServerCandidate(_getJobServerUrl());
+                const status = await _checkServerCandidate(serverUrl);
                 if (!status.ok) {
                   return;
                 }
@@ -138,6 +122,17 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                 uploadResults,
                 generatingFileSeriesInstanceUID
               );
+              try {
+                const generatedStudyOrthancID = _resolveGeneratedStudyOrthancID(uploadResults);
+                await _addMetadataToStudy(
+                  generatedStudyInstanceUID,
+                  generatingFilePrompt,
+                  'Prompt',
+                  generatedStudyOrthancID
+                );
+              } catch (metadataError) {
+                console.warn('Study metadata update failed, continuing:', metadataError);
+              }
               const generatedSeriesInstanceUID = await _resolveGeneratedSeriesInstanceUID(
                 uploadResults
               );
@@ -229,13 +224,21 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
         const interval = setInterval(checkModelIsRunning, 5000); // Check every 5 seconds
 
         return () => clearInterval(interval); // Cleanup on component unmount
-    }, [fileID, generatingFileSeriesInstanceUID, activeServerUrl, generationType, ctServerUrl, xrayServerUrl]);
+    }, [fileID, generatingFileSeriesInstanceUID, serverUrl]);
 
 
     // update text of previews
     useEffect(() => {
       // run when component is mounted at least once to avoid empty text when closing and reopening tab
       _handleDisplaySetsChanged();
+      try {
+        const storedStudyUID = localStorage.getItem('lastGeneratedStudyInstanceUID') || '';
+        if (storedStudyUID && storedStudyUID !== GENERATIVE_AI_PLACEHOLDER_STUDY_UID) {
+          setLastGeneratedStudyForViewer(storedStudyUID);
+        }
+      } catch (e) {
+        // Ignore storage access errors.
+      }
       _enforceOrthancStudyRetention().catch(error => {
         console.warn('Orthanc retention cleanup on mount failed:', error);
       });
@@ -251,8 +254,52 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       };
     }, []);
 
+    const _extractApiError = error => {
+      return (
+        error?.response?.data?.error ||
+        error?.response?.data?.detail ||
+        error?.message ||
+        'Unexpected error'
+      );
+    };
+
+    const _hasNonPlaceholderActiveStudy = () => {
+      const activeDisplaySets = displaySetService.getActiveDisplaySets() || [];
+      return activeDisplaySets.some(set => {
+        const studyUID = set?.StudyInstanceUID;
+        return !!studyUID && studyUID !== GENERATIVE_AI_PLACEHOLDER_STUDY_UID;
+      });
+    };
+    const _isPlaceholderStudyLoadedInUrl = () => {
+      try {
+        const currentUrl = new URL(window.location.href);
+        const studyUIDs = currentUrl.searchParams.getAll('StudyInstanceUIDs');
+        return (
+          studyUIDs.length > 0 &&
+          studyUIDs.every(uid => uid === GENERATIVE_AI_PLACEHOLDER_STUDY_UID)
+        );
+      } catch (error) {
+        return false;
+      }
+    };
+
     const handleGenerateClick = async (targetType = 'ct') => {
       try {
+        if (!_hasNonPlaceholderActiveStudy()) {
+          uiModalService.show({
+            title: 'Error with Image Generation',
+            containerDimensions: 'w-1/2',
+            content: () => (
+              <div>
+                <p className="mt-2 p-2">
+                  Open a real study before generating. The empty placeholder study cannot be used.
+                </p>
+              </div>
+            ),
+          });
+          return;
+        }
+
         if (!promptData?.trim()) {
           uiModalService.show({
             title: 'Error with Image Generation',
@@ -295,17 +342,6 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
         let currentFileID = `${formattedDate}${firstTenLetters}`; // e.g. YYYYMMDDHHMMSSCardiomega
 
         setFileID(currentFileID);
-        setGenerationType(targetType);
-
-        console.log('fileID', currentFileID);
-        const normalizedType = _normalizeType(targetType || 'ct');
-        const targetServerUrl = _getTargetServerUrl(normalizedType);
-        const targetServerStatus = await _checkServerCandidate(targetServerUrl);
-        if (!targetServerStatus.ok) {
-          throw new Error(`Selected backend not reachable for ${normalizedType.toUpperCase()}: ${targetServerUrl}`);
-        }
-        setActiveServerUrl(targetServerUrl);
-        const url = `${targetServerUrl}/files/${currentFileID}`;
 
         const payload = {
           filename: `${currentFileID}.npy`,
@@ -319,7 +355,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
           'Content-Type': 'application/json',
         };
 
-        const response = await axios.post(url, payload, { headers });
+        const response = await axios.post(`${serverUrl}/files/${currentFileID}`, payload, { headers });
         console.log('Start model');
         setGeneratingFilePrompt(payload.prompt || '');
         setGeneratingFileSeriesInstanceUID(response.data.seriesInstanceUID);
@@ -362,7 +398,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
     }
 
     const _uploadGeneratedFolderFromBackend = async folderName => {
-      const response = await axios.post(`${_getJobServerUrl()}/files/${folderName}/upload-orthanc`);
+      const response = await axios.post(`${serverUrl}/files/${folderName}/upload-orthanc`);
       return response?.data?.uploadResults || [];
     };
 
@@ -378,6 +414,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
 
       try {
         localStorage.setItem('lastGeneratedStudyInstanceUID', studyInstanceUID);
+        setLastGeneratedStudyForViewer(studyInstanceUID);
         if (seriesInstanceUID) {
           localStorage.setItem('lastGeneratedSeriesInstanceUID', seriesInstanceUID);
         } else {
@@ -415,6 +452,40 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       window.location.assign(destination);
     };
 
+    const _openBasicViewerForLastGeneratedStudy = () => {
+      if (_isPlaceholderStudyLoadedInUrl()) {
+        return;
+      }
+
+      let targetStudyUID = lastGeneratedStudyForViewer;
+      try {
+        if (!targetStudyUID) {
+          targetStudyUID = localStorage.getItem('lastGeneratedStudyInstanceUID') || '';
+        }
+      } catch (e) {
+        // Ignore storage errors.
+      }
+
+      if (!targetStudyUID || targetStudyUID === GENERATIVE_AI_PLACEHOLDER_STUDY_UID) {
+        return;
+      }
+
+      const currentUrl = new URL(window.location.href);
+      currentUrl.pathname = currentUrl.pathname.replace('/generative-ai/', '/viewer/');
+      currentUrl.searchParams.delete('StudyInstanceUIDs');
+      currentUrl.searchParams.delete('SeriesInstanceUIDs');
+      currentUrl.searchParams.delete('initialSeriesInstanceUID');
+      currentUrl.searchParams.delete('initialSopInstanceUID');
+      currentUrl.searchParams.append('StudyInstanceUIDs', targetStudyUID);
+
+      const destination = `${currentUrl.pathname}?${currentUrl.searchParams.toString()}`;
+      window.location.assign(destination);
+    };
+    const canOpenBasicViewer =
+      !_isPlaceholderStudyLoadedInUrl() &&
+      !!lastGeneratedStudyForViewer &&
+      lastGeneratedStudyForViewer !== GENERATIVE_AI_PLACEHOLDER_STUDY_UID;
+
     const _downloadAndUploadImages = async (fileID) => {
       try {
           console.log("downloadAndUploadImages fileID: ", fileID);
@@ -443,16 +514,16 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
 
     const _getFilesFromFolder = async (foldername) => {
         try {
-          const response = await axios.get(`${_getJobServerUrl()}/files/${foldername}`);
+          const response = await axios.get(`${serverUrl}/files/${foldername}`);
           return response.data;  // Assuming the response is a list of files
         } catch (error) {
           console.error("Error fetching files:", error.response ? error.response.data.error : error.message);
           throw error;  // Rethrow the error to handle it in the calling code if needed
         }
-      };
+    };
     const _fetchDicomFile = async (foldername, filename) => {
         try {
-          const response = await axios.post(`${_getJobServerUrl()}/files/${foldername}/${filename}`, {
+          const response = await axios.post(`${serverUrl}/files/${foldername}/${filename}`, {
             data: 'example'
           }, {
             headers: {
@@ -502,11 +573,18 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       }
 
       const studies = await response.json();
-      if (!Array.isArray(studies) || studies.length <= MAX_STORED_STUDIES) {
+      const filteredStudies = Array.isArray(studies)
+        ? studies.filter(study => {
+            const tags = study?.RequestedTags || study?.MainDicomTags || {};
+            return tags?.StudyInstanceUID !== GENERATIVE_AI_PLACEHOLDER_STUDY_UID;
+          })
+        : [];
+
+      if (filteredStudies.length <= MAX_STORED_STUDIES) {
         return;
       }
 
-      const normalized = studies
+      const normalized = filteredStudies
         .filter(study => study?.ID)
         .map(study => {
           const tags = study?.RequestedTags || study?.MainDicomTags || {};
@@ -600,6 +678,10 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       }
 
       return null;
+    };
+    const _resolveGeneratedStudyOrthancID = uploadResults => {
+      const firstResultWithStudy = (uploadResults || []).find(result => result?.ParentStudy);
+      return firstResultWithStudy?.ParentStudy || null;
     };
 
     const _resolveGeneratedSeriesInstanceUID = async uploadResults => {
@@ -742,6 +824,50 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
             throw error;
         }
       };
+    const _addMetadataToStudy = async (studyInstanceUid, data, type, providedOrthancStudyID = null) => {
+      const metadataKeysByType = {
+        Prompt: ['Prompt', '1026'],
+        Findings: ['Findings', '1024'],
+        Impressions: ['Impressions', '1025'],
+      };
+      const keys = metadataKeysByType[type] || [];
+      if (keys.length === 0) {
+        return;
+      }
+
+      try {
+        let orthancStudyID = providedOrthancStudyID;
+        if (!orthancStudyID && studyInstanceUid) {
+          const generatedStudy = await _getOrthancStudyByID(studyInstanceUid);
+          orthancStudyID = generatedStudy?.ID || null;
+        }
+        if (!orthancStudyID) {
+          throw new Error(`Generated study not found for UID: ${studyInstanceUid}`);
+        }
+
+        const headers = {
+          'Content-Type': 'text/plain',
+          Authorization: orthancAuth,
+        };
+
+        let anyWriteSucceeded = false;
+        for (const key of keys) {
+          try {
+            await axios.put(`/pacs/studies/${orthancStudyID}/metadata/${key}`, data || '', { headers });
+            anyWriteSucceeded = true;
+          } catch (writeError) {
+            console.warn(`Study metadata write failed for key ${key}:`, writeError);
+          }
+        }
+
+        if (!anyWriteSucceeded) {
+          throw new Error(`Unable to persist ${type} metadata on study.`);
+        }
+      } catch (error) {
+        console.log(`There was a problem with study metadata update: ${error}`);
+        throw error;
+      }
+    };
     const _getOrthancSeriesInstanceUIDByOrthancID = async seriesOrthancID => {
       if (!seriesOrthancID) {
         return null;
@@ -767,6 +893,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
     };
     const _handleDisplaySetsChanged = async (changedDisplaySets = null) => {
         const activeDisplaySets = displaySetService.getActiveDisplaySets();
+        setHasUsableInputStudy(_hasNonPlaceholderActiveStudy());
         // set initial prompt header to "Generated, NOT_USED_NUMBER"
         const seriesDescriptions = activeDisplaySets.map(set => set.SeriesDescription);
         const seriesDescriptionNumbers = _extractNumbers(seriesDescriptions);
@@ -794,7 +921,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
 
                 <textarea
                     rows={6}
-                    placeholder="Enter Text to generate CT..."
+                    placeholder="Enter Text to generate image ..."
                     className="text-white text-[14px] leading-[1.2] border-primary-main bg-black align-top sshadow transition duration-300 appearance-none border border-inputfield-main focus:border-inputfield-focus focus:outline-none disabled:border-inputfield-disabled rounded w-full py-2 px-3 text-sm text-white placeholder-inputfield-placeholder leading-tight"
                     value={promptData}
                     onChange={handlePromptChange}
@@ -826,7 +953,12 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                             {
                                 label: 'Generate',
                                 onClick: () => handleGenerateClick(generationType || 'ct'),
-                                disabled: !generationType || modelIsRunning || !isServerRunning || dataIsUploading,
+                                disabled:
+                                  !generationType ||
+                                  modelIsRunning ||
+                                  !isServerRunning ||
+                                  dataIsUploading ||
+                                  !hasUsableInputStudy,
                             },
                             {
                                 label: 'Clear',
@@ -841,8 +973,22 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                     modelIsRunning={modelIsRunning}
                     dataIsUploading={dataIsUploading}
                     isServerRunning={isServerRunning}
-                    serverUrl={_getJobServerUrl()}
+                    serverUrl={serverUrl}
                 />
+                <div className="mt-3 flex justify-end">
+                    <button
+                        type="button"
+                        onClick={_openBasicViewerForLastGeneratedStudy}
+                        disabled={!canOpenBasicViewer}
+                        className={`h-[32px] rounded px-3 text-sm text-white ${
+                          canOpenBasicViewer
+                            ? 'bg-primary-main hover:bg-primary-light'
+                            : 'bg-inputfield-placeholder text-common-light cursor-default'
+                        }`}
+                    >
+                        Basic Viewer
+                    </button>
+                </div>
 
             </div>
 

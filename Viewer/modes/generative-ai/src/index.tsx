@@ -128,7 +128,7 @@ function modeFactory({ modeConfiguration }) {
       {
         path: 'template',
         allowEmptyStudies: true,
-        layoutTemplate: ({ location, servicesManager }) => {
+        layoutTemplate: ({ location, servicesManager, studyInstanceUIDs }) => {
           return {
             id: ohif.layout,
             props: {
@@ -138,7 +138,9 @@ function modeFactory({ modeConfiguration }) {
               viewports: [
                 {
                   namespace: cornerstone.viewport,
-                  displaySetsToDisplay: [ohif.sopClassHandler],
+                  ...(Array.isArray(studyInstanceUIDs) && studyInstanceUIDs.length
+                    ? { displaySetsToDisplay: [ohif.sopClassHandler] }
+                    : {}),
                 },
               ],
             },
@@ -164,3 +166,4 @@ const mode = {
 };
 
 export default mode;
+

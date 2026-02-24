@@ -13,6 +13,7 @@ function ReportSidePanelComponent({ commandsManager, extensionManager, servicesM
             <TextArea 
                 servicesManager={servicesManager}
                 commandsManager={commandsManager}
+                showPrompt={false}
             />
             {/* dif line */}
             <div className="border border-primary-main"> </div>
