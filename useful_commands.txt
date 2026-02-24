@@ -1,6 +1,6 @@
 # Setup iniziale (prima volta)
 
-## 0) Prerequisiti e install dipendenze
+## 0) Prerequisiti2 e install dipendenze
 ```bash
 # Node/Yarn (monorepo OHIF + lerna)
 node -v
