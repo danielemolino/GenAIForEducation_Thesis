@@ -1,3 +1,22 @@
+# Setup iniziale (prima volta)
+
+## 0) Prerequisiti e install dipendenze
+```bash
+# Node/Yarn (monorepo OHIF + lerna)
+node -v
+yarn -v
+cd /mnt/d/GenAIforEdu/Viewer
+yarn config set workspaces-experimental true
+yarn install
+
+# Python backend
+cd /mnt/d/GenAIforEdu
+python -m venv .venv
+source .venv/bin/activate   # su PowerShell: .venv\Scripts\Activate.ps1
+pip install --upgrade pip setuptools wheel
+pip install numpy pydicom fastapi nibabel pillow tifffile uvicorn
+```
+
 # Avvio rapido
 
 Tre terminali separati:
@@ -27,4 +46,3 @@ cd /mnt/d/GenAIforEdu/BackendModelli
 pip install numpy pydicom fastapi pillow tifffile uvicorn
 uvicorn main_xgem:app --host 0.0.0.0 --port 8001 --access-log
 ```
-
