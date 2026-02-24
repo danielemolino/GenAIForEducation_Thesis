@@ -1,0 +1,6 @@
+{
+  "model_type": "LDM+VAE",
+  "task": "Text Conditioned CT Generation",
+  "framework": "monai",
+  "modality": "ct"
+}

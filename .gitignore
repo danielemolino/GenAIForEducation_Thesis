@@ -1,0 +1,66 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Logs and runtime artifacts
+*.log
+*.pid
+*.out
+
+# Local caches
+.cache/
+.nx/
+Viewer/.nx/
+**/daemon.log
+
+# Model/data artifacts (keep source code only)
+models/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+
+# Local generated content
+BackendModelli/generated_files/
+BackendModelli/*.zip
+BackendModelli/*.tar
+BackendModelli/*.tiff
+BackendModelli/*.tif
+BackendModelli/*.nii
+BackendModelli/*.nii.gz
+BackendModelli/*_subprocess_*.log
+BackendModelli/Text2CT/demo/
+BackendModelli/Text2CT/predictions/
+BackendModelli/Text2CT/embeddings/
+BackendModelli/Text2CT/dataset/
+BackendModelli/Text2CT/models/
+Viewer/.nx/
+Viewer/.yarn/
+Viewer/.pnp*
+Viewer/.eslintcache
+Viewer/.stylelintcache
+
+# Root large artifacts
+orthanc_image.tar
+*.zip
+*.crdownload
+
+# Node (root-level safety; Viewer has its own .gitignore)
+node_modules/

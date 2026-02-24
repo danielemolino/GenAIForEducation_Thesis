@@ -1,0 +1,30 @@
+# Avvio rapido
+
+Tre terminali separati:
+
+## 1) Viewer (web app)
+```bash
+cd /mnt/d/GenAIforEdu/Viewer
+yarn dev:orthanc
+```
+
+## 2) Docker (Orthanc)
+```bash
+cd /mnt/d/GenAIforEdu/Viewer
+yarn orthanc:up
+```
+
+## 3) Backend CT (Text2CT)
+```bash
+cd /mnt/d/GenAIforEdu/BackendModelli
+pip install numpy pydicom fastapi nibabel pillow uvicorn
+uvicorn main_text2ct:app --host 0.0.0.0 --port 8000 --access-log
+```
+
+## 4) Backend XRay (XGeM)
+```bash
+cd /mnt/d/GenAIforEdu/BackendModelli
+pip install numpy pydicom fastapi pillow tifffile uvicorn
+uvicorn main_xgem:app --host 0.0.0.0 --port 8001 --access-log
+```
+
