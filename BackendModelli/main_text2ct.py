@@ -46,6 +46,7 @@ ASSETS_ROOT = Path(__file__).resolve().parent / "simulation_assets"
 ORTHANC_INSTANCES_URL = "http://localhost:8042/instances"
 ORTHANC_BASIC_AUTH = base64.b64encode(b"orthanc:orthanc").decode("ascii")
 EMPTY_GENERATIVE_STUDY_UID = "1.2.826.0.1.3680043.8.498.92334923612841918328708913924036869452"
+SERVICE_MODE = "ct-only"
 
 _process_is_running = False
 _progress_text = "Idle"
@@ -888,7 +889,12 @@ def _upload_single_dicom_to_orthanc(dcm_file: Path) -> dict:
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "serviceMode": SERVICE_MODE}
+
+
+@app.get("/mode")
+def mode():
+    return {"serviceMode": SERVICE_MODE, "allowedGenerationTypes": ["ct", "xray"]}
 
 
 @app.get("/status")

@@ -33,23 +33,53 @@ cd /mnt/d/GenAIforEdu/Viewer
 yarn orthanc:up
 ```
 
-## 3) Backend CT (Text2CT)
+## 3) Backend principale unico (router CT/XRay)
 ```bash
 cd /mnt/d/GenAIforEdu/BackendModelli
-pip install numpy pydicom fastapi nibabel pillow uvicorn
-uvicorn main_text2ct:app --host 0.0.0.0 --port 8000 --access-log
-```
-
-## 3b) Backend base (main.py) - alternativa
-```bash
-cd /mnt/d/GenAIforEdu/BackendModelli
-pip install numpy pydicom fastapi nibabel pillow uvicorn
+pip install numpy pydicom fastapi nibabel pillow tifffile uvicorn
+$env:BACKEND_MODE="full"
+$env:GENERATION_ENGINE="real"
 uvicorn main:app --host 0.0.0.0 --port 8000 --access-log
 ```
 
-## 4) Backend XRay (XGeM)
+# Modalita backend (sempre e solo main.py)
+
+## M1) Solo API base (nessun modello)
 ```bash
 cd /mnt/d/GenAIforEdu/BackendModelli
-pip install numpy pydicom fastapi pillow tifffile uvicorn
-uvicorn main_xgem:app --host 0.0.0.0 --port 8001 --access-log
+$env:BACKEND_MODE="api-only"
+$env:GENERATION_ENGINE="real"
+uvicorn main:app --host 0.0.0.0 --port 8000 --access-log
+```
+
+## M2) Solo CT (Text2CT)
+```bash
+cd /mnt/d/GenAIforEdu/BackendModelli
+$env:BACKEND_MODE="ct-only"
+$env:GENERATION_ENGINE="real"
+uvicorn main:app --host 0.0.0.0 --port 8000 --access-log
+```
+
+## M3) Solo XRay (XGeM)
+```bash
+cd /mnt/d/GenAIforEdu/BackendModelli
+$env:BACKEND_MODE="xgem-only"
+$env:GENERATION_ENGINE="real"
+uvicorn main:app --host 0.0.0.0 --port 8000 --access-log
+```
+
+## M4) Full (CT + XRay nello stesso processo)
+```bash
+cd /mnt/d/GenAIforEdu/BackendModelli
+$env:BACKEND_MODE="full"
+$env:GENERATION_ENGINE="real"
+uvicorn main:app --host 0.0.0.0 --port 8000 --access-log
+```
+
+## (Opzionale) Engine asset/fake per debug memoria
+```bash
+cd /mnt/d/GenAIforEdu/BackendModelli
+$env:BACKEND_MODE="full"
+$env:GENERATION_ENGINE="asset"
+uvicorn main:app --host 0.0.0.0 --port 8000 --access-log
 ```

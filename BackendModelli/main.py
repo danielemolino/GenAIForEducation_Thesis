@@ -1,7 +1,9 @@
 from datetime import datetime
 from pathlib import Path
+import os
 import threading
 import time
+import importlib
 from typing import List
 import json
 import base64
@@ -38,11 +40,17 @@ ASSETS_ROOT = Path(__file__).resolve().parent / "simulation_assets"
 ORTHANC_INSTANCES_URL = "http://localhost:8042/instances"
 ORTHANC_BASIC_AUTH = base64.b64encode(b"orthanc:orthanc").decode("ascii")
 EMPTY_GENERATIVE_STUDY_UID = "1.2.826.0.1.3680043.8.498.92334923612841918328708913924036869452"
+BACKEND_MODE = (os.getenv("BACKEND_MODE") or "full").strip().lower()
+VALID_BACKEND_MODES = {"api-only", "ct-only", "xgem-only", "full"}
+GENERATION_ENGINE = (os.getenv("GENERATION_ENGINE") or "real").strip().lower()
 
 _process_is_running = False
 _progress_text = "Idle"
 _state_lock = threading.Lock()
 _bootstrap_lock = threading.Lock()
+_engine_lock = threading.Lock()
+_ct_writer = None
+_xray_writer = None
 
 try:
     import nibabel as nib
@@ -84,6 +92,51 @@ def _normalize_to_uint16(arr: np.ndarray) -> np.ndarray:
     if maxv > 0:
         arr = arr / maxv
     return (arr * 4095).astype(np.uint16)
+
+
+def _normalize_generation_type(raw_generation_type: str | None) -> str:
+    generation_type = (raw_generation_type or "ct").lower()
+    if generation_type == "xrays":
+        generation_type = "xray"
+    return generation_type
+
+
+def _allowed_generation_types_for_mode(mode: str) -> set[str]:
+    if mode == "api-only":
+        return set()
+    if mode == "ct-only":
+        return {"ct"}
+    if mode == "xgem-only":
+        return {"xray"}
+    return {"ct", "xray"}
+
+
+def _import_sibling_module(module_name: str):
+    # Supports both "uvicorn main:app" and "uvicorn BackendModelli.main:app".
+    try:
+        return importlib.import_module(module_name)
+    except Exception:
+        if __package__:
+            return importlib.import_module(f"{__package__}.{module_name}")
+        raise
+
+
+def _resolve_ct_writer():
+    global _ct_writer
+    with _engine_lock:
+        if _ct_writer is None:
+            module = _import_sibling_module("main_text2ct")
+            _ct_writer = getattr(module, "_write_ct_dicoms")
+    return _ct_writer
+
+
+def _resolve_xray_writer():
+    global _xray_writer
+    with _engine_lock:
+        if _xray_writer is None:
+            module = _import_sibling_module("main_xgem")
+            _xray_writer = getattr(module, "_write_xray_dicom")
+    return _xray_writer
 
 
 def _find_ct_asset() -> Path | None:
@@ -308,18 +361,30 @@ def _simulate_generation_job(file_id: str, payload: dict, series_instance_uid: s
 
         folder.mkdir(parents=True, exist_ok=True)
 
-        generation_type = (payload.get("generationType") or "ct").lower()
+        generation_type = _normalize_generation_type(payload.get("generationType"))
         study_instance_uid = payload.get("studyInstanceUID") or generate_uid()
+        use_real_engine = GENERATION_ENGINE == "real"
         if generation_type == "ct":
-            _set_progress("Converting NIfTI to DICOM (CT)")
-            out_files = _write_ct_dicoms(folder, payload, series_instance_uid, study_instance_uid)
+            if use_real_engine:
+                _set_progress("Generating CT with Text2CT")
+                ct_writer = _resolve_ct_writer()
+                out_files = ct_writer(folder, payload, series_instance_uid, study_instance_uid)
+            else:
+                _set_progress("Converting NIfTI to DICOM (CT asset fallback)")
+                out_files = _write_ct_dicoms(folder, payload, series_instance_uid, study_instance_uid)
         else:
-            _set_progress("Converting image to DICOM (Xray)")
-            out_files = _write_xray_dicom(folder, payload, series_instance_uid, study_instance_uid)
+            if use_real_engine:
+                _set_progress("Generating XRay with XGeM")
+                xray_writer = _resolve_xray_writer()
+                out_files = xray_writer(folder, payload, series_instance_uid, study_instance_uid)
+            else:
+                _set_progress("Converting image to DICOM (Xray asset fallback)")
+                out_files = _write_xray_dicom(folder, payload, series_instance_uid, study_instance_uid)
 
         summary = {
             "fileID": file_id,
             "generationType": generation_type,
+            "engine": GENERATION_ENGINE,
             "studyInstanceUID": study_instance_uid,
             "seriesInstanceUID": series_instance_uid,
             "dicomCount": len(out_files),
@@ -467,7 +532,24 @@ def _upload_single_dicom_to_orthanc(dcm_file: Path) -> dict:
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    mode_ok = BACKEND_MODE in VALID_BACKEND_MODES
+    return {
+        "status": "ok" if mode_ok else "misconfigured",
+        "backendMode": BACKEND_MODE,
+        "generationEngine": GENERATION_ENGINE,
+        "validModes": sorted(VALID_BACKEND_MODES),
+    }
+
+
+@app.get("/mode")
+def mode():
+    allowed_generation_types = sorted(_allowed_generation_types_for_mode(BACKEND_MODE))
+    return {
+        "backendMode": BACKEND_MODE,
+        "generationEngine": GENERATION_ENGINE,
+        "validModes": sorted(VALID_BACKEND_MODES),
+        "allowedGenerationTypes": allowed_generation_types,
+    }
 
 
 @app.get("/status")
@@ -521,11 +603,34 @@ def start_generation(file_id: str, payload: dict):
     if _get_process_state():
         return JSONResponse(status_code=409, content={"error": "A generation is already running"})
 
-    generation_type = (payload.get("generationType") or "ct").lower()
-    if generation_type == "xrays":
-        generation_type = "xray"
+    if BACKEND_MODE not in VALID_BACKEND_MODES:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": f"Invalid BACKEND_MODE='{BACKEND_MODE}'. Valid values: {sorted(VALID_BACKEND_MODES)}"
+            },
+        )
+
+    generation_type = _normalize_generation_type(payload.get("generationType"))
     if generation_type not in ("ct", "xray"):
         return JSONResponse(status_code=400, content={"error": "generationType must be 'ct' or 'xray'/'xrays'"})
+
+    allowed_generation_types = _allowed_generation_types_for_mode(BACKEND_MODE)
+    if generation_type not in allowed_generation_types:
+        if BACKEND_MODE == "api-only":
+            return JSONResponse(
+                status_code=503,
+                content={"error": "Generation disabled in api-only mode"},
+            )
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": (
+                    f"generationType '{generation_type}' not allowed in mode '{BACKEND_MODE}'. "
+                    f"Allowed: {sorted(allowed_generation_types)}"
+                )
+            },
+        )
 
     series_instance_uid = generate_uid()
     _set_process_state(True)

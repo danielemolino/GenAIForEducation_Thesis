@@ -53,6 +53,7 @@ ORTHANC_BASIC_AUTH = base64.b64encode(b"orthanc:orthanc").decode("ascii")
 
 XGEM_DEFAULT_ROOT = Path("/mnt/c/Users/danie/OneDrive/Desktop/Codice/XGeM_API")
 XGEM_DEFAULT_ROOT_WINDOWS = Path(r"C:\Users\danie\OneDrive\Desktop\Codice\XGeM_API")
+SERVICE_MODE = "xgem-only"
 
 _process_is_running = False
 _progress_text = "Idle"
@@ -388,7 +389,12 @@ def _upload_folder_to_orthanc(folder: Path) -> List[dict]:
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "serviceMode": SERVICE_MODE}
+
+
+@app.get("/mode")
+def mode():
+    return {"serviceMode": SERVICE_MODE, "allowedGenerationTypes": ["xray"]}
 
 
 @app.get("/status")

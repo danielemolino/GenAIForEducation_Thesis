@@ -20,6 +20,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
     const [generationType, setGenerationType] = useState('');
     const [lastGeneratedStudyForViewer, setLastGeneratedStudyForViewer] = useState('');
     const [hasUsableInputStudy, setHasUsableInputStudy] = useState(false);
+    const [allowedGenerationTypes, setAllowedGenerationTypes] = useState([]);
 
     const disabled = false;
     const MAX_STORED_STUDIES = 50;
@@ -37,35 +38,76 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       try {
         const statusResponse = await axios.get(`${candidateUrl}/status`);
         if (statusResponse.status === 200) {
-          return { ok: true, processIsRunning: !!statusResponse.data?.process_is_running };
+          let modelAvailable = true;
+          let modeAllowedGenerationTypes = null;
+          try {
+            const modeResponse = await axios.get(`${candidateUrl}/mode`);
+            const allowed = modeResponse?.data?.allowedGenerationTypes;
+            modeAllowedGenerationTypes = Array.isArray(allowed) ? allowed : null;
+            if (Array.isArray(allowed) && allowed.length === 0) {
+              modelAvailable = false;
+            }
+            if (modeResponse?.data?.backendMode === 'api-only') {
+              modelAvailable = false;
+            }
+          } catch (modeError) {
+            // Older backends may not expose /mode; keep legacy behavior.
+          }
+          return {
+            ok: true,
+            processIsRunning: !!statusResponse.data?.process_is_running,
+            modelAvailable,
+            allowedGenerationTypes: modeAllowedGenerationTypes,
+          };
         }
       } catch (statusError) {
         // Fallback for older backends without /status endpoint.
         try {
           const rootResponse = await axios.get(candidateUrl);
           if (rootResponse.status === 200) {
-            return { ok: true, processIsRunning: false };
+            return {
+              ok: true,
+              processIsRunning: false,
+              modelAvailable: true,
+              allowedGenerationTypes: null,
+            };
           }
         } catch (rootError) {
-          return { ok: false, processIsRunning: false };
+          return {
+            ok: false,
+            processIsRunning: false,
+            modelAvailable: false,
+            allowedGenerationTypes: null,
+          };
         }
       }
-      return { ok: false, processIsRunning: false };
+      return { ok: false, processIsRunning: false, modelAvailable: false, allowedGenerationTypes: null };
     };
 
     // check server status
     useEffect(() => {
         const checkServerStatus = async () => {
           const uniqueCandidates = [...new Set([serverUrl, ...defaultServerCandidates])];
+          let fallbackReachableUrl = null;
           for (const candidateUrl of uniqueCandidates) {
             const status = await _checkServerCandidate(candidateUrl);
             if (status.ok) {
-              setServerUrl(candidateUrl);
-              setIsServerRunning(true);
-              return;
+              if (status.modelAvailable) {
+                setServerUrl(candidateUrl);
+                setIsServerRunning(true);
+                setAllowedGenerationTypes(status.allowedGenerationTypes || []);
+                return;
+              }
+              if (!fallbackReachableUrl) {
+                fallbackReachableUrl = candidateUrl;
+              }
             }
           }
+          if (fallbackReachableUrl) {
+            setServerUrl(fallbackReachableUrl);
+          }
           setIsServerRunning(false);
+          setAllowedGenerationTypes([]);
         };
 
         checkServerStatus();
@@ -81,6 +123,9 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                 const status = await _checkServerCandidate(serverUrl);
                 if (!status.ok) {
                   return;
+                }
+                if (Array.isArray(status.allowedGenerationTypes)) {
+                  setAllowedGenerationTypes(status.allowedGenerationTypes);
                 }
                 const processIsRunning = status.processIsRunning;
                 setModelIsRunning((prevModelIsRunning) => {
@@ -263,11 +308,11 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       );
     };
 
-    const _hasNonPlaceholderActiveStudy = () => {
+    const _hasActiveStudy = () => {
       const activeDisplaySets = displaySetService.getActiveDisplaySets() || [];
       return activeDisplaySets.some(set => {
         const studyUID = set?.StudyInstanceUID;
-        return !!studyUID && studyUID !== GENERATIVE_AI_PLACEHOLDER_STUDY_UID;
+        return !!studyUID;
       });
     };
     const _isPlaceholderStudyLoadedInUrl = () => {
@@ -285,14 +330,14 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
 
     const handleGenerateClick = async (targetType = 'ct') => {
       try {
-        if (!_hasNonPlaceholderActiveStudy()) {
+        if (!_hasActiveStudy()) {
           uiModalService.show({
             title: 'Error with Image Generation',
             containerDimensions: 'w-1/2',
             content: () => (
               <div>
                 <p className="mt-2 p-2">
-                  Open a real study before generating. The empty placeholder study cannot be used.
+                  Open a study before generating.
                 </p>
               </div>
             ),
@@ -893,7 +938,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
     };
     const _handleDisplaySetsChanged = async (changedDisplaySets = null) => {
         const activeDisplaySets = displaySetService.getActiveDisplaySets();
-        setHasUsableInputStudy(_hasNonPlaceholderActiveStudy());
+        setHasUsableInputStudy(_hasActiveStudy());
         // set initial prompt header to "Generated, NOT_USED_NUMBER"
         const seriesDescriptions = activeDisplaySets.map(set => set.SeriesDescription);
         const seriesDescriptionNumbers = _extractNumbers(seriesDescriptions);
@@ -901,6 +946,12 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
         setPromptHeaderData(`Generated, ${maxNumber+1}`)
 
     };
+    const normalizedGenerationType = generationType === 'xrays' ? 'xray' : generationType;
+    const selectedTypeAllowed =
+      !normalizedGenerationType ||
+      allowedGenerationTypes.length === 0 ||
+      allowedGenerationTypes.includes(normalizedGenerationType);
+    const generationReady = isServerRunning && selectedTypeAllowed;
 
 
     return (
@@ -943,8 +994,12 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                             <option value="" disabled>
                               Select generation type
                             </option>
-                            <option value="ct">Generate CT</option>
-                            <option value="xrays">Generate X-RAYS</option>
+                            <option value="ct" disabled={allowedGenerationTypes.length > 0 && !allowedGenerationTypes.includes('ct')}>
+                              Generate CT
+                            </option>
+                            <option value="xrays" disabled={allowedGenerationTypes.length > 0 && !allowedGenerationTypes.includes('xray')}>
+                              Generate X-RAYS
+                            </option>
                         </select>
                     </div>
                     <ActionButtons
@@ -956,7 +1011,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                                 disabled:
                                   !generationType ||
                                   modelIsRunning ||
-                                  !isServerRunning ||
+                                  !generationReady ||
                                   dataIsUploading ||
                                   !hasUsableInputStudy,
                             },
@@ -972,7 +1027,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                 <ServerStatus
                     modelIsRunning={modelIsRunning}
                     dataIsUploading={dataIsUploading}
-                    isServerRunning={isServerRunning}
+                    isServerRunning={generationReady}
                     serverUrl={serverUrl}
                 />
                 <div className="mt-3 flex justify-end">
