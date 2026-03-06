@@ -5,6 +5,8 @@ import os
 import uuid
 import base64
 from pathlib import Path
+import tempfile
+import zipfile
 from urllib import request as urlrequest
 from urllib import error as urlerror
 
@@ -97,7 +99,13 @@ def _post_xray_legacy(payload: dict) -> dict:
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
     )
     with urlrequest.urlopen(req, timeout=WORKER_TIMEOUT_SECONDS) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        raw = resp.read()
+        content_type = (resp.headers.get("Content-Type") or "").lower()
+        if "application/json" in content_type:
+            return json.loads(raw.decode("utf-8"))
+        if "application/zip" in content_type or raw[:2] == b"PK":
+            return {"ok": True, "zip_bytes_b64": base64.b64encode(raw).decode("ascii")}
+        raise RuntimeError(f"Unsupported legacy response content type: {content_type or 'unknown'}")
 
 
 def _encode_npy_b64(arr: np.ndarray) -> str:
@@ -129,6 +137,24 @@ def _load_pixels_from_path(path_str: str) -> np.ndarray:
 def _normalize_xray_response(data: dict) -> dict:
     if data.get("ok") and data.get("pixels_npy_b64"):
         return data
+
+    if data.get("ok") and data.get("zip_bytes_b64"):
+        if tifffile is None and Image is None:
+            raise RuntimeError("Need tifffile or Pillow to decode legacy zip output")
+        zip_bytes = base64.b64decode(data["zip_bytes_b64"].encode("ascii"))
+        with tempfile.TemporaryDirectory(prefix="xgem_zip_") as tmp_dir_str:
+            tmp_dir = Path(tmp_dir_str)
+            zip_path = tmp_dir / "output.zip"
+            zip_path.write_bytes(zip_bytes)
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(tmp_dir)
+            # Prefer medical image outputs first.
+            candidates = list(tmp_dir.rglob("*.tiff")) + list(tmp_dir.rglob("*.tif"))
+            candidates += list(tmp_dir.rglob("*.png")) + list(tmp_dir.rglob("*.jpg")) + list(tmp_dir.rglob("*.jpeg"))
+            if not candidates:
+                raise RuntimeError("Legacy zip does not contain a supported image output")
+            pixels = _load_pixels_from_path(str(candidates[0]))
+            return {"ok": True, "pixels_npy_b64": _encode_npy_b64(pixels), "shape": list(pixels.shape)}
 
     # Common legacy fields that may contain output image path.
     candidate_keys = [
