@@ -49,30 +49,31 @@ Architettura:
 - `genedu` chiama `http://slurmsrv:4450`
 - `slurmsrv:4450 -> gn03:8001` (gateway)
 - gateway inoltra localmente a:
-  - CT worker `127.0.0.1:8101`
-  - XRay worker `127.0.0.1:8102`
+  - CT worker `127.0.0.1:8002`
+  - XGeM legacy gia attivo `127.0.0.1:8000`
 
-## 1) CT worker (gn03:8101)
+## 1) XGeM legacy (gn03:8000)
 ```bash
-cd /path/to/GenAIForEducation_Thesis/BackendModelli
-source .venv/bin/activate
-uvicorn remote_services.workers.ct_worker:app --host 0.0.0.0 --port 8101 --access-log
+# Gia attivo per altra web page (non avviare una seconda istanza sulla stessa porta)
+curl http://127.0.0.1:8000/healthz
 ```
 
-## 2) XRay worker (gn03:8102)
+## 2) CT worker (gn03:8002)
 ```bash
 cd /path/to/GenAIForEducation_Thesis/BackendModelli
 source .venv/bin/activate
-export XGEM_API_ROOT="/path/to/XGeM_API"
-uvicorn remote_services.workers.xray_worker:app --host 0.0.0.0 --port 8102 --access-log
+uvicorn remote_services.workers.ct_worker:app --host 0.0.0.0 --port 8002 --access-log
 ```
 
 ## 3) Gateway unico (gn03:8001)
 ```bash
 cd /path/to/GenAIForEducation_Thesis/BackendModelli
 source .venv/bin/activate
-export CT_WORKER_URL="http://127.0.0.1:8101"
-export XRAY_WORKER_URL="http://127.0.0.1:8102"
+export CT_WORKER_URL="http://127.0.0.1:8002"
+export XRAY_WORKER_URL="http://127.0.0.1:8000"
+export XRAY_HEALTH_PATH="/healthz"
+export XRAY_INFER_PATH="/generate"
+export XRAY_LEGACY_TASK="report_to_frontal"
 uvicorn remote_services.gateway.main:app --host 0.0.0.0 --port 8001 --access-log
 ```
 
