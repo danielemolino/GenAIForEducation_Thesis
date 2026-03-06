@@ -3,7 +3,7 @@ from pathlib import Path
 import os
 import threading
 import time
-import importlib
+import io
 from typing import List
 import json
 import base64
@@ -43,14 +43,15 @@ EMPTY_GENERATIVE_STUDY_UID = "1.2.826.0.1.3680043.8.498.923349236128419183287089
 BACKEND_MODE = (os.getenv("BACKEND_MODE") or "full").strip().lower()
 VALID_BACKEND_MODES = {"api-only", "ct-only", "xgem-only", "full"}
 GENERATION_ENGINE = (os.getenv("GENERATION_ENGINE") or "real").strip().lower()
+CT_REMOTE_URL = (os.getenv("CT_REMOTE_URL") or "").strip().rstrip("/")
+XRAY_REMOTE_URL = (os.getenv("XRAY_REMOTE_URL") or "").strip().rstrip("/")
+REMOTE_INFERENCE_URL = (os.getenv("REMOTE_INFERENCE_URL") or "").strip().rstrip("/")
+REMOTE_TIMEOUT_SECONDS = float(os.getenv("REMOTE_TIMEOUT_SECONDS", "300"))
 
 _process_is_running = False
 _progress_text = "Idle"
 _state_lock = threading.Lock()
 _bootstrap_lock = threading.Lock()
-_engine_lock = threading.Lock()
-_ct_writer = None
-_xray_writer = None
 
 try:
     import nibabel as nib
@@ -111,32 +112,50 @@ def _allowed_generation_types_for_mode(mode: str) -> set[str]:
     return {"ct", "xray"}
 
 
-def _import_sibling_module(module_name: str):
-    # Supports both "uvicorn main:app" and "uvicorn BackendModelli.main:app".
+def _post_json(url: str, payload: dict, timeout: float = REMOTE_TIMEOUT_SECONDS) -> dict:
+    req = urlrequest.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urlrequest.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _get_json(url: str, timeout: float = 5.0) -> dict:
+    req = urlrequest.Request(url, method="GET")
+    with urlrequest.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _service_url_for_generation_type(generation_type: str) -> str:
+    if generation_type == "ct":
+        return CT_REMOTE_URL or REMOTE_INFERENCE_URL or XRAY_REMOTE_URL
+    return XRAY_REMOTE_URL or REMOTE_INFERENCE_URL or CT_REMOTE_URL
+
+
+def _check_remote_service(remote_url: str, generation_type: str | None = None) -> tuple[bool, str]:
+    if not remote_url:
+        return False, "missing-url"
     try:
-        return importlib.import_module(module_name)
-    except Exception:
-        if __package__:
-            return importlib.import_module(f"{__package__}.{module_name}")
-        raise
+        health_path = f"/health/{generation_type}" if generation_type in {"ct", "xray"} else "/health"
+        data = _get_json(f"{remote_url}{health_path}", timeout=3.0)
+        ok = str(data.get("status", "")).lower() == "ok"
+        return ok, "ok" if ok else "unhealthy"
+    except Exception as exc:
+        return False, str(exc)
 
 
-def _resolve_ct_writer():
-    global _ct_writer
-    with _engine_lock:
-        if _ct_writer is None:
-            module = _import_sibling_module("main_text2ct")
-            _ct_writer = getattr(module, "_write_ct_dicoms")
-    return _ct_writer
-
-
-def _resolve_xray_writer():
-    global _xray_writer
-    with _engine_lock:
-        if _xray_writer is None:
-            module = _import_sibling_module("main_xgem")
-            _xray_writer = getattr(module, "_write_xray_dicom")
-    return _xray_writer
+def _remote_services_status() -> dict:
+    ct_url = _service_url_for_generation_type("ct")
+    xray_url = _service_url_for_generation_type("xray")
+    ct_ok, ct_reason = _check_remote_service(ct_url, "ct")
+    xray_ok, xray_reason = _check_remote_service(xray_url, "xray")
+    return {
+        "ct": {"url": ct_url, "available": ct_ok, "reason": ct_reason},
+        "xray": {"url": xray_url, "available": xray_ok, "reason": xray_reason},
+    }
 
 
 def _find_ct_asset() -> Path | None:
@@ -263,6 +282,24 @@ def _write_ct_dicoms(
     study_instance_uid: str,
 ) -> List[Path]:
     volume, spacing = _load_ct_volume()
+    return _write_ct_dicoms_from_volume(
+        output_dir=output_dir,
+        payload=payload,
+        series_instance_uid=series_instance_uid,
+        study_instance_uid=study_instance_uid,
+        volume=volume,
+        spacing=spacing,
+    )
+
+
+def _write_ct_dicoms_from_volume(
+    output_dir: Path,
+    payload: dict,
+    series_instance_uid: str,
+    study_instance_uid: str,
+    volume: np.ndarray,
+    spacing: tuple[float, float, float],
+) -> List[Path]:
     series_description = payload.get("description") or "Generated CT"
     row_spacing, col_spacing, slice_spacing = spacing
     num_slices = int(volume.shape[2])
@@ -319,6 +356,22 @@ def _write_xray_dicom(
     study_instance_uid: str,
 ) -> List[Path]:
     pixels = _load_xray_pixels()
+    return _write_xray_dicom_from_pixels(
+        output_dir=output_dir,
+        payload=payload,
+        series_instance_uid=series_instance_uid,
+        study_instance_uid=study_instance_uid,
+        pixels=pixels,
+    )
+
+
+def _write_xray_dicom_from_pixels(
+    output_dir: Path,
+    payload: dict,
+    series_instance_uid: str,
+    study_instance_uid: str,
+    pixels: np.ndarray,
+) -> List[Path]:
     out_path = output_dir / "xray_001.dcm"
     sop_instance_uid = generate_uid()
 
@@ -351,13 +404,46 @@ def _write_xray_dicom(
     return [out_path]
 
 
+def _decode_numpy_from_base64(encoded_array: str) -> np.ndarray:
+    arr_bytes = base64.b64decode(encoded_array.encode("ascii"))
+    return np.load(io.BytesIO(arr_bytes), allow_pickle=False)
+
+
+def _generate_ct_via_remote(payload: dict) -> tuple[np.ndarray, tuple[float, float, float]]:
+    remote_url = _service_url_for_generation_type("ct")
+    if not remote_url:
+        raise RuntimeError("CT remote URL not configured (set CT_REMOTE_URL or REMOTE_INFERENCE_URL)")
+    response = _post_json(f"{remote_url}/infer/ct", payload)
+    if not response.get("ok"):
+        raise RuntimeError(response.get("error") or "CT remote inference failed")
+    spacing_raw = response.get("spacing") or [1.0, 1.0, 1.0]
+    spacing = (float(spacing_raw[0]), float(spacing_raw[1]), float(spacing_raw[2]))
+    volume = _decode_numpy_from_base64(response["volume_npy_b64"]).astype(np.int16)
+    if volume.ndim != 3:
+        raise RuntimeError(f"CT remote volume shape invalid: {volume.shape}")
+    return volume, spacing
+
+
+def _generate_xray_via_remote(payload: dict) -> np.ndarray:
+    remote_url = _service_url_for_generation_type("xray")
+    if not remote_url:
+        raise RuntimeError("XRay remote URL not configured (set XRAY_REMOTE_URL or REMOTE_INFERENCE_URL)")
+    response = _post_json(f"{remote_url}/infer/xray", payload)
+    if not response.get("ok"):
+        raise RuntimeError(response.get("error") or "XRay remote inference failed")
+    pixels = _decode_numpy_from_base64(response["pixels_npy_b64"])
+    if pixels.ndim != 2:
+        raise RuntimeError(f"XRay remote pixels shape invalid: {pixels.shape}")
+    return _normalize_to_uint16(pixels)
+
+
 def _simulate_generation_job(file_id: str, payload: dict, series_instance_uid: str) -> None:
     folder = OUTPUT_ROOT / file_id
     summary_path = folder / "summary.json"
     try:
         _set_progress("Queued")
         time.sleep(1)
-        _set_progress("Running fake generation")
+        _set_progress("Running generation")
 
         folder.mkdir(parents=True, exist_ok=True)
 
@@ -366,17 +452,30 @@ def _simulate_generation_job(file_id: str, payload: dict, series_instance_uid: s
         use_real_engine = GENERATION_ENGINE == "real"
         if generation_type == "ct":
             if use_real_engine:
-                _set_progress("Generating CT with Text2CT")
-                ct_writer = _resolve_ct_writer()
-                out_files = ct_writer(folder, payload, series_instance_uid, study_instance_uid)
+                _set_progress("Generating CT via remote service")
+                volume, spacing = _generate_ct_via_remote(payload)
+                out_files = _write_ct_dicoms_from_volume(
+                    output_dir=folder,
+                    payload=payload,
+                    series_instance_uid=series_instance_uid,
+                    study_instance_uid=study_instance_uid,
+                    volume=volume,
+                    spacing=spacing,
+                )
             else:
                 _set_progress("Converting NIfTI to DICOM (CT asset fallback)")
                 out_files = _write_ct_dicoms(folder, payload, series_instance_uid, study_instance_uid)
         else:
             if use_real_engine:
-                _set_progress("Generating XRay with XGeM")
-                xray_writer = _resolve_xray_writer()
-                out_files = xray_writer(folder, payload, series_instance_uid, study_instance_uid)
+                _set_progress("Generating XRay via remote service")
+                pixels = _generate_xray_via_remote(payload)
+                out_files = _write_xray_dicom_from_pixels(
+                    output_dir=folder,
+                    payload=payload,
+                    series_instance_uid=series_instance_uid,
+                    study_instance_uid=study_instance_uid,
+                    pixels=pixels,
+                )
             else:
                 _set_progress("Converting image to DICOM (Xray asset fallback)")
                 out_files = _write_xray_dicom(folder, payload, series_instance_uid, study_instance_uid)
@@ -533,23 +632,41 @@ def _upload_single_dicom_to_orthanc(dcm_file: Path) -> dict:
 @app.get("/health")
 def health():
     mode_ok = BACKEND_MODE in VALID_BACKEND_MODES
+    services = _remote_services_status() if GENERATION_ENGINE == "real" else None
     return {
         "status": "ok" if mode_ok else "misconfigured",
         "backendMode": BACKEND_MODE,
         "generationEngine": GENERATION_ENGINE,
         "validModes": sorted(VALID_BACKEND_MODES),
+        "services": services,
     }
 
 
 @app.get("/mode")
 def mode():
-    allowed_generation_types = sorted(_allowed_generation_types_for_mode(BACKEND_MODE))
+    allowed_generation_types = _allowed_generation_types_for_mode(BACKEND_MODE)
+    services = _remote_services_status() if GENERATION_ENGINE == "real" else None
+    if services:
+        if not services["ct"]["available"]:
+            allowed_generation_types.discard("ct")
+        if not services["xray"]["available"]:
+            allowed_generation_types.discard("xray")
     return {
         "backendMode": BACKEND_MODE,
         "generationEngine": GENERATION_ENGINE,
         "validModes": sorted(VALID_BACKEND_MODES),
-        "allowedGenerationTypes": allowed_generation_types,
+        "allowedGenerationTypes": sorted(allowed_generation_types),
+        "services": services,
     }
+
+
+@app.get("/services/status")
+def services_status():
+    services = _remote_services_status() if GENERATION_ENGINE == "real" else {
+        "ct": {"url": "", "available": True, "reason": "asset-mode"},
+        "xray": {"url": "", "available": True, "reason": "asset-mode"},
+    }
+    return {"generationEngine": GENERATION_ENGINE, "services": services}
 
 
 @app.get("/status")
@@ -616,6 +733,19 @@ def start_generation(file_id: str, payload: dict):
         return JSONResponse(status_code=400, content={"error": "generationType must be 'ct' or 'xray'/'xrays'"})
 
     allowed_generation_types = _allowed_generation_types_for_mode(BACKEND_MODE)
+    if GENERATION_ENGINE == "real":
+        remote_url = _service_url_for_generation_type(generation_type)
+        svc_ok, svc_reason = _check_remote_service(remote_url, generation_type)
+        if not svc_ok:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": (
+                        f"{generation_type} service is not available "
+                        f"(url='{remote_url}', reason='{svc_reason}')"
+                    )
+                },
+            )
     if generation_type not in allowed_generation_types:
         if BACKEND_MODE == "api-only":
             return JSONResponse(
@@ -643,7 +773,7 @@ def start_generation(file_id: str, payload: dict):
     worker.start()
 
     return {
-        "message": "Fake generation started",
+        "message": "Generation started",
         "prompt": prompt,
         "seriesInstanceUID": series_instance_uid,
         "generationType": generation_type,

@@ -17,69 +17,106 @@ pip install --upgrade pip setuptools wheel
 pip install numpy pydicom fastapi nibabel pillow tifffile uvicorn
 ```
 
-# Avvio rapido
+# Avvio rapido - GENEDU (VM web)
 
-Tre terminali separati:
+Tre terminali separati su `genedu`:
 
-## 1) Viewer (web app)
-```bash
-cd /mnt/d/GenAIforEdu/Viewer
-yarn dev:orthanc
-```
-
-## 2) Docker (Orthanc)
+## 1) Orthanc (Docker)
 ```bash
 cd /mnt/d/GenAIforEdu/Viewer
 yarn orthanc:up
 ```
 
-## 3) Backend principale unico (router CT/XRay)
+## 2) Viewer (web app)
+```bash
+cd /mnt/d/GenAIforEdu/Viewer
+yarn dev:orthanc
+```
+
+## 3) Backend orchestratore (chiama servizi remoti)
 ```bash
 cd /mnt/d/GenAIforEdu/BackendModelli
 pip install numpy pydicom fastapi nibabel pillow tifffile uvicorn
-$env:BACKEND_MODE="full"
-$env:GENERATION_ENGINE="real"
+export BACKEND_MODE="full"
+export GENERATION_ENGINE="real"
+export REMOTE_INFERENCE_URL="http://slurmsrv:4450"
 uvicorn main:app --host 0.0.0.0 --port 8000 --access-log
 ```
 
-# Modalita backend (sempre e solo main.py)
+# Servizi modello su GN03 + gateway unico su 8001
+
+Architettura:
+- `genedu` chiama `http://slurmsrv:4450`
+- `slurmsrv:4450 -> gn03:8001` (gateway)
+- gateway inoltra localmente a:
+  - CT worker `127.0.0.1:8101`
+  - XRay worker `127.0.0.1:8102`
+
+## 1) CT worker (gn03:8101)
+```bash
+cd /path/to/GenAIForEducation_Thesis/BackendModelli
+source .venv/bin/activate
+uvicorn remote_services.workers.ct_worker:app --host 0.0.0.0 --port 8101 --access-log
+```
+
+## 2) XRay worker (gn03:8102)
+```bash
+cd /path/to/GenAIForEducation_Thesis/BackendModelli
+source .venv/bin/activate
+export XGEM_API_ROOT="/path/to/XGeM_API"
+uvicorn remote_services.workers.xray_worker:app --host 0.0.0.0 --port 8102 --access-log
+```
+
+## 3) Gateway unico (gn03:8001)
+```bash
+cd /path/to/GenAIForEducation_Thesis/BackendModelli
+source .venv/bin/activate
+export CT_WORKER_URL="http://127.0.0.1:8101"
+export XRAY_WORKER_URL="http://127.0.0.1:8102"
+uvicorn remote_services.gateway.main:app --host 0.0.0.0 --port 8001 --access-log
+```
+
+# Modalita backend orchestratore (main.py su genedu)
 
 ## M1) Solo API base (nessun modello)
 ```bash
 cd /mnt/d/GenAIforEdu/BackendModelli
-$env:BACKEND_MODE="api-only"
-$env:GENERATION_ENGINE="real"
+export BACKEND_MODE="api-only"
+export GENERATION_ENGINE="real"
 uvicorn main:app --host 0.0.0.0 --port 8000 --access-log
 ```
 
 ## M2) Solo CT (Text2CT)
 ```bash
 cd /mnt/d/GenAIforEdu/BackendModelli
-$env:BACKEND_MODE="ct-only"
-$env:GENERATION_ENGINE="real"
+export BACKEND_MODE="ct-only"
+export GENERATION_ENGINE="real"
+export REMOTE_INFERENCE_URL="http://slurmsrv:4450"
 uvicorn main:app --host 0.0.0.0 --port 8000 --access-log
 ```
 
 ## M3) Solo XRay (XGeM)
 ```bash
 cd /mnt/d/GenAIforEdu/BackendModelli
-$env:BACKEND_MODE="xgem-only"
-$env:GENERATION_ENGINE="real"
+export BACKEND_MODE="xgem-only"
+export GENERATION_ENGINE="real"
+export REMOTE_INFERENCE_URL="http://slurmsrv:4450"
 uvicorn main:app --host 0.0.0.0 --port 8000 --access-log
 ```
 
 ## M4) Full (CT + XRay nello stesso processo)
 ```bash
 cd /mnt/d/GenAIforEdu/BackendModelli
-$env:BACKEND_MODE="full"
-$env:GENERATION_ENGINE="real"
+export BACKEND_MODE="full"
+export GENERATION_ENGINE="real"
+export REMOTE_INFERENCE_URL="http://slurmsrv:4450"
 uvicorn main:app --host 0.0.0.0 --port 8000 --access-log
 ```
 
 ## (Opzionale) Engine asset/fake per debug memoria
 ```bash
 cd /mnt/d/GenAIforEdu/BackendModelli
-$env:BACKEND_MODE="full"
-$env:GENERATION_ENGINE="asset"
+export BACKEND_MODE="full"
+export GENERATION_ENGINE="asset"
 uvicorn main:app --host 0.0.0.0 --port 8000 --access-log
 ```

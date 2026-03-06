@@ -21,6 +21,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
     const [lastGeneratedStudyForViewer, setLastGeneratedStudyForViewer] = useState('');
     const [hasUsableInputStudy, setHasUsableInputStudy] = useState(false);
     const [allowedGenerationTypes, setAllowedGenerationTypes] = useState([]);
+    const [serviceHealth, setServiceHealth] = useState({ ct: false, xray: false });
 
     const disabled = false;
     const MAX_STORED_STUDIES = 50;
@@ -34,16 +35,34 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
     const [serverUrl, setServerUrl] = useState(defaultServerCandidates[0]);
     const orthancAuth = `Basic ${window.btoa('orthanc:orthanc')}`;
 
+    const _toServiceHealth = (servicesData, fallbackAllowedTypes = null) => {
+      if (servicesData?.ct && servicesData?.xray) {
+        return {
+          ct: !!servicesData.ct.available,
+          xray: !!servicesData.xray.available,
+        };
+      }
+      if (Array.isArray(fallbackAllowedTypes)) {
+        return {
+          ct: fallbackAllowedTypes.includes('ct'),
+          xray: fallbackAllowedTypes.includes('xray'),
+        };
+      }
+      return { ct: true, xray: true };
+    };
+
     const _checkServerCandidate = async candidateUrl => {
       try {
         const statusResponse = await axios.get(`${candidateUrl}/status`);
         if (statusResponse.status === 200) {
           let modelAvailable = true;
           let modeAllowedGenerationTypes = null;
+          let currentServiceHealth = { ct: false, xray: false };
           try {
             const modeResponse = await axios.get(`${candidateUrl}/mode`);
             const allowed = modeResponse?.data?.allowedGenerationTypes;
             modeAllowedGenerationTypes = Array.isArray(allowed) ? allowed : null;
+            currentServiceHealth = _toServiceHealth(modeResponse?.data?.services, modeAllowedGenerationTypes);
             if (Array.isArray(allowed) && allowed.length === 0) {
               modelAvailable = false;
             }
@@ -52,12 +71,20 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
             }
           } catch (modeError) {
             // Older backends may not expose /mode; keep legacy behavior.
+            try {
+              const servicesResponse = await axios.get(`${candidateUrl}/services/status`);
+              currentServiceHealth = _toServiceHealth(servicesResponse?.data?.services, null);
+              modelAvailable = currentServiceHealth.ct || currentServiceHealth.xray;
+            } catch (servicesError) {
+              modelAvailable = true;
+            }
           }
           return {
             ok: true,
             processIsRunning: !!statusResponse.data?.process_is_running,
             modelAvailable,
             allowedGenerationTypes: modeAllowedGenerationTypes,
+            serviceHealth: currentServiceHealth,
           };
         }
       } catch (statusError) {
@@ -70,6 +97,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
               processIsRunning: false,
               modelAvailable: true,
               allowedGenerationTypes: null,
+              serviceHealth: { ct: true, xray: true },
             };
           }
         } catch (rootError) {
@@ -78,10 +106,17 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
             processIsRunning: false,
             modelAvailable: false,
             allowedGenerationTypes: null,
+            serviceHealth: { ct: false, xray: false },
           };
         }
       }
-      return { ok: false, processIsRunning: false, modelAvailable: false, allowedGenerationTypes: null };
+      return {
+        ok: false,
+        processIsRunning: false,
+        modelAvailable: false,
+        allowedGenerationTypes: null,
+        serviceHealth: { ct: false, xray: false },
+      };
     };
 
     // check server status
@@ -96,6 +131,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                 setServerUrl(candidateUrl);
                 setIsServerRunning(true);
                 setAllowedGenerationTypes(status.allowedGenerationTypes || []);
+                setServiceHealth(status.serviceHealth || { ct: false, xray: false });
                 return;
               }
               if (!fallbackReachableUrl) {
@@ -108,6 +144,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
           }
           setIsServerRunning(false);
           setAllowedGenerationTypes([]);
+          setServiceHealth({ ct: false, xray: false });
         };
 
         checkServerStatus();
@@ -126,6 +163,9 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                 }
                 if (Array.isArray(status.allowedGenerationTypes)) {
                   setAllowedGenerationTypes(status.allowedGenerationTypes);
+                }
+                if (status.serviceHealth) {
+                  setServiceHealth(status.serviceHealth);
                 }
                 const processIsRunning = status.processIsRunning;
                 setModelIsRunning((prevModelIsRunning) => {
@@ -947,11 +987,14 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
 
     };
     const normalizedGenerationType = generationType === 'xrays' ? 'xray' : generationType;
+    const selectedTypeServiceUp =
+      !normalizedGenerationType ||
+      (normalizedGenerationType === 'ct' ? serviceHealth.ct : serviceHealth.xray);
     const selectedTypeAllowed =
       !normalizedGenerationType ||
       allowedGenerationTypes.length === 0 ||
       allowedGenerationTypes.includes(normalizedGenerationType);
-    const generationReady = isServerRunning && selectedTypeAllowed;
+    const generationReady = isServerRunning && selectedTypeAllowed && selectedTypeServiceUp;
 
 
     return (
@@ -994,10 +1037,10 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                             <option value="" disabled>
                               Select generation type
                             </option>
-                            <option value="ct" disabled={allowedGenerationTypes.length > 0 && !allowedGenerationTypes.includes('ct')}>
+                            <option value="ct" disabled={(allowedGenerationTypes.length > 0 && !allowedGenerationTypes.includes('ct')) || !serviceHealth.ct}>
                               Generate CT
                             </option>
-                            <option value="xrays" disabled={allowedGenerationTypes.length > 0 && !allowedGenerationTypes.includes('xray')}>
+                            <option value="xrays" disabled={(allowedGenerationTypes.length > 0 && !allowedGenerationTypes.includes('xray')) || !serviceHealth.xray}>
                               Generate X-RAYS
                             </option>
                         </select>
@@ -1027,8 +1070,9 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                 <ServerStatus
                     modelIsRunning={modelIsRunning}
                     dataIsUploading={dataIsUploading}
-                    isServerRunning={generationReady}
+                    isServerRunning={isServerRunning}
                     serverUrl={serverUrl}
+                    serviceHealth={serviceHealth}
                 />
                 <div className="mt-3 flex justify-end">
                     <button

@@ -4,7 +4,7 @@ import axios from 'axios';
 import './Loading.css';
 
 
-const ServerStatus = ({modelIsRunning,dataIsUploading, isServerRunning, serverUrl}) => {
+const ServerStatus = ({ modelIsRunning, dataIsUploading, isServerRunning, serverUrl, serviceHealth }) => {
   
   const [progress, setProgress] = useState('');
   
@@ -66,6 +66,32 @@ const ServerStatus = ({modelIsRunning,dataIsUploading, isServerRunning, serverUr
       
       </div>
 
+    </div>
+    <div className="flex items-center gap-4 p-2 bg-primary-dark text-xs text-gray-300">
+      <div className="flex items-center gap-1">
+        <span>CT</span>
+        <span
+          style={{
+            width: '8px',
+            height: '8px',
+            borderRadius: '50%',
+            backgroundColor: serviceHealth?.ct ? 'green' : 'red',
+            display: 'inline-block',
+          }}
+        />
+      </div>
+      <div className="flex items-center gap-1">
+        <span>XRay</span>
+        <span
+          style={{
+            width: '8px',
+            height: '8px',
+            borderRadius: '50%',
+            backgroundColor: serviceHealth?.xray ? 'green' : 'red',
+            display: 'inline-block',
+          }}
+        />
+      </div>
     </div>
     
     <div className="text-gray-700 text-[12px] leading-[1.2] bg-black align-bottom p-2 appearance-none">
