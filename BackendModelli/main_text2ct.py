@@ -493,7 +493,7 @@ def _generate_ct_volume_with_text2ct(payload: dict, output_dir: Path) -> tuple[n
         args.diffusion_unet_inference["dim"] = list(payload["text2ctDim"])
     elif device.type == "cuda":
         # Default GPU target volume unless explicitly overridden by payload.
-        args.diffusion_unet_inference["dim"] = [512, 512, 512]
+        args.diffusion_unet_inference["dim"] = [512, 512, 128]
         logger.info("GPU mode detected, defaulting text2ct dim to %s", args.diffusion_unet_inference["dim"])
     elif device.type == "cpu":
         args.diffusion_unet_inference["dim"] = [128, 128, 32]
