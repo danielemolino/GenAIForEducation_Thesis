@@ -27,9 +27,11 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
     const MAX_STORED_STUDIES = 50;
     const GENERATIVE_AI_PLACEHOLDER_STUDY_UID =
       '1.2.826.0.1.3680043.8.498.92334923612841918328708913924036869452';
+    const browserHost = window.location.hostname || 'localhost';
     const defaultServerCandidates = [
-      'http://localhost:5000',
+      `http://${browserHost}:8000`,
       'http://localhost:8000',
+      'http://localhost:5000',
       'http://149.165.154.176:5000',
     ];
     const [serverUrl, setServerUrl] = useState(defaultServerCandidates[0]);

@@ -17,6 +17,22 @@ pip install --upgrade pip setuptools wheel
 pip install numpy pydicom fastapi nibabel pillow tifffile uvicorn
 ```
 
+## 0b) Setup Python su GN03 (Conda/Miniforge, no Python 3.6 system)
+```bash
+module load amd/gcc-8.5.0/miniforge3
+
+conda create --name genedu_cuda python=3.10.4 -y
+source activate genedu_cuda
+
+pip install --upgrade pip setuptools wheel
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+pip install fastapi uvicorn numpy pydicom nibabel pillow tifffile
+
+# check
+python --version
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
 # Avvio rapido - GENEDU (VM web)
 
 Tre terminali separati su `genedu`:
@@ -61,14 +77,16 @@ curl http://127.0.0.1:8000/healthz
 ## 2) CT worker (gn03:8002)
 ```bash
 cd /path/to/GenAIForEducation_Thesis/BackendModelli
-source .venv/bin/activate
+module load amd/gcc-8.5.0/miniforge3
+source activate genedu_cuda
 uvicorn remote_services.workers.ct_worker:app --host 0.0.0.0 --port 8002 --access-log
 ```
 
 ## 3) Gateway unico (gn03:8001)
 ```bash
 cd /path/to/GenAIForEducation_Thesis/BackendModelli
-source .venv/bin/activate
+module load amd/gcc-8.5.0/miniforge3
+source activate genedu_cuda
 export CT_WORKER_URL="http://127.0.0.1:8002"
 export XRAY_WORKER_URL="http://127.0.0.1:8000"
 export XRAY_HEALTH_PATH="/healthz"
