@@ -317,6 +317,29 @@ def _run_text2ct_inference_device_aware(
         device=device,
         dtype=model_dtype,
     )
+    logger.info(
+        "Text2CT debug: output_size=%s divisor=%s latent_shape=%s latent_dtype=%s device=%s steps=%s use_cfg=%s guidance_scale=%s",
+        tuple(output_size),
+        divisor,
+        tuple(noise.shape),
+        str(noise.dtype),
+        str(device),
+        args.diffusion_unet_inference["num_inference_steps"],
+        use_cfg,
+        guidance_scale,
+    )
+    if device.type == "cuda":
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+            logger.info(
+                "Text2CT debug: cuda_mem_before total=%.2f GiB free=%.2f GiB allocated=%.2f GiB reserved=%.2f GiB",
+                total_bytes / (1024**3),
+                free_bytes / (1024**3),
+                torch.cuda.memory_allocated(device) / (1024**3),
+                torch.cuda.memory_reserved(device) / (1024**3),
+            )
+        except Exception:
+            logger.exception("Text2CT debug: failed to read cuda memory info before inference")
 
     if not args.diffusion_unet_def["include_top_region_index_input"]:
         top_region_index_tensor = None
@@ -397,6 +420,18 @@ def _run_text2ct_inference_device_aware(
             device=device,
         )
         synthetic_images = dynamic_infer(inferer, recon_model, image)
+        if device.type == "cuda":
+            try:
+                free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+                logger.info(
+                    "Text2CT debug: cuda_mem_after total=%.2f GiB free=%.2f GiB allocated=%.2f GiB reserved=%.2f GiB",
+                    total_bytes / (1024**3),
+                    free_bytes / (1024**3),
+                    torch.cuda.memory_allocated(device) / (1024**3),
+                    torch.cuda.memory_reserved(device) / (1024**3),
+                )
+            except Exception:
+                logger.exception("Text2CT debug: failed to read cuda memory info after inference")
         data = synthetic_images.squeeze().cpu().detach().numpy()
         data = (data - 0.0) / (1.0 - 0.0) * (1000 - (-1000)) + (-1000)
         data = np.clip(data, -1000, 1000)
