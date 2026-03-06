@@ -300,7 +300,7 @@ def _run_text2ct_inference_device_aware(
     logger,
     prompt,
 ) -> np.ndarray:
-    model_dtype = torch.float32 if device.type == "cpu" else next(unet.parameters()).dtype
+    model_dtype = torch.float32
     include_body_region = unet.include_top_region_index_input
     include_modality = unet.num_class_embeds is not None
     use_cfg = args.use_cfg
@@ -315,7 +315,6 @@ def _run_text2ct_inference_device_aware(
             output_size[2] // divisor,
         ),
         device=device,
-        dtype=model_dtype,
     )
     logger.info(
         "Text2CT debug: output_size=%s divisor=%s latent_shape=%s latent_dtype=%s device=%s steps=%s use_cfg=%s guidance_scale=%s",
@@ -346,9 +345,14 @@ def _run_text2ct_inference_device_aware(
         bottom_region_index_tensor = None
         spacing_tensor = None
     else:
-        top_region_index_tensor = top_region_index_tensor.to(device=device, dtype=model_dtype)
-        bottom_region_index_tensor = bottom_region_index_tensor.to(device=device, dtype=model_dtype)
-        spacing_tensor = spacing_tensor.to(device=device, dtype=model_dtype)
+        if device.type == "cpu":
+            top_region_index_tensor = top_region_index_tensor.to(device=device, dtype=torch.float32)
+            bottom_region_index_tensor = bottom_region_index_tensor.to(device=device, dtype=torch.float32)
+            spacing_tensor = spacing_tensor.to(device=device, dtype=torch.float32)
+        else:
+            top_region_index_tensor = top_region_index_tensor.to(device=device)
+            bottom_region_index_tensor = bottom_region_index_tensor.to(device=device)
+            spacing_tensor = spacing_tensor.to(device=device)
 
     noise_scheduler = define_instance(args, "noise_scheduler")
 
@@ -361,7 +365,7 @@ def _run_text2ct_inference_device_aware(
         noise_scheduler.set_timesteps(num_inference_steps=args.diffusion_unet_inference["num_inference_steps"])
 
     with torch.no_grad():
-        impression = clip_model([prompt], "encode_text").to(device=device, dtype=model_dtype)
+        impression = clip_model([prompt], "encode_text").to(device=device)
 
     recon_model = ReconModel(autoencoder=autoencoder, scale_factor=scale_factor).to(device)
     autoencoder.eval()
@@ -376,7 +380,7 @@ def _run_text2ct_inference_device_aware(
         for t, next_t in zip(all_timesteps, all_next_timesteps):
             unet_inputs = {
                 "x": image,
-                "timesteps": torch.tensor((t,), device=device, dtype=model_dtype),
+                "timesteps": torch.tensor((t,), device=device),
                 "spacing_tensor": spacing_tensor,
             }
 
