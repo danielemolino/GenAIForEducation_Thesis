@@ -29,7 +29,7 @@ CT_WORKER_URL = (os.getenv("CT_WORKER_URL") or "http://127.0.0.1:8002").strip().
 XRAY_WORKER_URL = (os.getenv("XRAY_WORKER_URL") or "http://127.0.0.1:8000").strip().rstrip("/")
 XRAY_HEALTH_PATH = (os.getenv("XRAY_HEALTH_PATH") or "/healthz").strip()
 XRAY_INFER_PATH = (os.getenv("XRAY_INFER_PATH") or "/generate").strip()
-XRAY_LEGACY_TASK = (os.getenv("XRAY_LEGACY_TASK") or "report_to_frontal").strip()
+XRAY_LEGACY_TASK = (os.getenv("XRAY_LEGACY_TASK") or "T->F").strip()
 WORKER_TIMEOUT_SECONDS = float(os.getenv("WORKER_TIMEOUT_SECONDS", "300"))
 
 

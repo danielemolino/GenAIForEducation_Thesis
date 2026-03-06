@@ -61,6 +61,7 @@ Viewer/.stylelintcache
 orthanc_image.tar
 *.zip
 *.crdownload
+LOCAL_STATUS.md
 
 # Node (root-level safety; Viewer has its own .gitignore)
 node_modules/

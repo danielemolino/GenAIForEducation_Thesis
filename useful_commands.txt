@@ -91,7 +91,7 @@ export CT_WORKER_URL="http://127.0.0.1:8002"
 export XRAY_WORKER_URL="http://127.0.0.1:8000"
 export XRAY_HEALTH_PATH="/healthz"
 export XRAY_INFER_PATH="/generate"
-export XRAY_LEGACY_TASK="report_to_frontal"
+export XRAY_LEGACY_TASK="T->F"
 uvicorn remote_services.gateway.main:app --host 0.0.0.0 --port 8001 --access-log
 ```
 
