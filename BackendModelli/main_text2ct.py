@@ -376,69 +376,70 @@ def _run_text2ct_inference_device_aware(
     autocast_ctx = torch.amp.autocast("cuda", enabled=device.type == "cuda") if device.type == "cuda" else nullcontext()
 
     image = noise
-    with autocast_ctx:
-        for t, next_t in zip(all_timesteps, all_next_timesteps):
-            unet_inputs = {
-                "x": image,
-                "timesteps": torch.tensor((t,), device=device),
-                "spacing_tensor": spacing_tensor,
-            }
+    with torch.inference_mode():
+        with autocast_ctx:
+            for t, next_t in zip(all_timesteps, all_next_timesteps):
+                unet_inputs = {
+                    "x": image,
+                    "timesteps": torch.tensor((t,), device=device),
+                    "spacing_tensor": spacing_tensor,
+                }
 
-            if include_body_region:
-                unet_inputs.update(
-                    {
-                        "top_region_index_tensor": top_region_index_tensor,
-                        "bottom_region_index_tensor": bottom_region_index_tensor,
-                    }
-                )
+                if include_body_region:
+                    unet_inputs.update(
+                        {
+                            "top_region_index_tensor": top_region_index_tensor,
+                            "bottom_region_index_tensor": bottom_region_index_tensor,
+                        }
+                    )
 
-            if include_modality:
-                unet_inputs.update({"class_labels": modality_tensor})
+                if include_modality:
+                    unet_inputs.update({"class_labels": modality_tensor})
 
-            if use_cfg:
-                unet_inputs_no_text = unet_inputs.copy()
-                unet_inputs.update({"context": impression})
-                unet_inputs_no_text.update({"context": torch.zeros_like(impression, device=device)})
+                if use_cfg:
+                    unet_inputs_no_text = unet_inputs.copy()
+                    unet_inputs.update({"context": impression})
+                    unet_inputs_no_text.update({"context": torch.zeros_like(impression, device=device)})
 
-                model_output_uncond = unet(**unet_inputs_no_text)
-                model_output_cond = unet(**unet_inputs)
-                model_output = model_output_uncond + guidance_scale * (model_output_cond - model_output_uncond)
-            else:
-                unet_inputs.update({"context": impression})
-                model_output = unet(**unet_inputs)
+                    model_output_uncond = unet(**unet_inputs_no_text)
+                    model_output_cond = unet(**unet_inputs)
+                    model_output = model_output_uncond + guidance_scale * (model_output_cond - model_output_uncond)
+                else:
+                    unet_inputs.update({"context": impression})
+                    model_output = unet(**unet_inputs)
 
-            if not isinstance(noise_scheduler, RFlowScheduler):
-                image, _ = noise_scheduler.step(model_output, t, image)
-            else:
-                image, _ = noise_scheduler.step(model_output, t, image, next_t)
-            if device.type == "cpu":
-                image = image.float()
+                if not isinstance(noise_scheduler, RFlowScheduler):
+                    image, _ = noise_scheduler.step(model_output, t, image)
+                else:
+                    image, _ = noise_scheduler.step(model_output, t, image, next_t)
+                if device.type == "cpu":
+                    image = image.float()
 
-        inferer = SlidingWindowInferer(
-            roi_size=[80, 80, 80],
-            sw_batch_size=1,
-            progress=False,
-            mode="gaussian",
-            overlap=0.4,
-            sw_device=device,
-            device=device,
-        )
-        synthetic_images = dynamic_infer(inferer, recon_model, image)
-        if device.type == "cuda":
-            try:
-                free_bytes, total_bytes = torch.cuda.mem_get_info(device)
-                logger.info(
-                    "Text2CT debug: cuda_mem_after total=%.2f GiB free=%.2f GiB allocated=%.2f GiB reserved=%.2f GiB",
-                    total_bytes / (1024**3),
-                    free_bytes / (1024**3),
-                    torch.cuda.memory_allocated(device) / (1024**3),
-                    torch.cuda.memory_reserved(device) / (1024**3),
-                )
-            except Exception:
-                logger.exception("Text2CT debug: failed to read cuda memory info after inference")
-        data = synthetic_images.squeeze().cpu().detach().numpy()
-        data = (data - 0.0) / (1.0 - 0.0) * (1000 - (-1000)) + (-1000)
-        data = np.clip(data, -1000, 1000)
+            inferer = SlidingWindowInferer(
+                roi_size=[80, 80, 80],
+                sw_batch_size=1,
+                progress=False,
+                mode="gaussian",
+                overlap=0.4,
+                sw_device=device,
+                device=device,
+            )
+            synthetic_images = dynamic_infer(inferer, recon_model, image)
+            if device.type == "cuda":
+                try:
+                    free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+                    logger.info(
+                        "Text2CT debug: cuda_mem_after total=%.2f GiB free=%.2f GiB allocated=%.2f GiB reserved=%.2f GiB",
+                        total_bytes / (1024**3),
+                        free_bytes / (1024**3),
+                        torch.cuda.memory_allocated(device) / (1024**3),
+                        torch.cuda.memory_reserved(device) / (1024**3),
+                    )
+                except Exception:
+                    logger.exception("Text2CT debug: failed to read cuda memory info after inference")
+            data = synthetic_images.squeeze().cpu().detach().numpy()
+            data = (data - 0.0) / (1.0 - 0.0) * (1000 - (-1000)) + (-1000)
+            data = np.clip(data, -1000, 1000)
     logger.info("Text2CT inference done on device=%s", device)
     return np.int16(data)
 
