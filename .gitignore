@@ -50,7 +50,6 @@ BackendModelli/Text2CT/demo/
 BackendModelli/Text2CT/predictions/
 BackendModelli/Text2CT/embeddings/
 BackendModelli/Text2CT/dataset/
-BackendModelli/Text2CT/models/
 Viewer/.nx/
 Viewer/.yarn/
 Viewer/.pnp*
@@ -65,3 +64,12 @@ LOCAL_STATUS.md
 
 # Node (root-level safety; Viewer has its own .gitignore)
 node_modules/
+
+# Keep Text2CT fully versioned inside this repository.
+!BackendModelli/Text2CT/
+!BackendModelli/Text2CT/**
+!BackendModelli/Text2CT/**/*.pt
+# But still ignore Python build/cache artifacts inside Text2CT.
+BackendModelli/Text2CT/**/__pycache__/
+BackendModelli/Text2CT/**/*.py[cod]
+BackendModelli/Text2CT/**/*.pyo
