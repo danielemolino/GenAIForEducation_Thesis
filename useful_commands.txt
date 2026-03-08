@@ -1,5 +1,28 @@
 # Setup iniziale (prima volta)
 
+# Orchestrazione rapida (1 comando up/down per host)
+
+## GENEDU
+```bash
+# avvio tutto (orthanc + viewer + backend)
+./scripts/genedu_up.sh --tags orthanc,viewer,backend --backend-mode full --generation-engine real --remote-url http://192.168.128.3:4450
+
+# stop tutto
+./scripts/genedu_down.sh --tags orthanc,viewer,backend
+```
+
+## GN03
+```bash
+# esempio: gateway + CT, riuso XGeM gia esposto su :8000
+./scripts/gn03_up.sh --services gateway,ct --python python --xray-url http://127.0.0.1:8000
+
+# esempio: solo gateway + XRay remoto esterno
+./scripts/gn03_up.sh --services gateway --python python --xray-url http://127.0.0.1:8000
+
+# stop servizi avviati dallo script
+./scripts/gn03_down.sh --services gateway,ct,xray
+```
+
 ## 0) Prerequisiti2 e install dipendenze
 ```bash
 # Node/Yarn (monorepo OHIF + lerna)

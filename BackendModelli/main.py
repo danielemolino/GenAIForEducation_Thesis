@@ -4,6 +4,7 @@ import os
 import threading
 import time
 import io
+import re
 from typing import List
 import json
 import base64
@@ -47,6 +48,9 @@ CT_REMOTE_URL = (os.getenv("CT_REMOTE_URL") or "").strip().rstrip("/")
 XRAY_REMOTE_URL = (os.getenv("XRAY_REMOTE_URL") or "").strip().rstrip("/")
 REMOTE_INFERENCE_URL = (os.getenv("REMOTE_INFERENCE_URL") or "").strip().rstrip("/")
 REMOTE_TIMEOUT_SECONDS = float(os.getenv("REMOTE_TIMEOUT_SECONDS", "300"))
+ENABLE_LEXICAL_RETRIEVAL_FALLBACK = (
+    os.getenv("ENABLE_LEXICAL_RETRIEVAL_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}
+)
 
 _process_is_running = False
 _progress_text = "Idle"
@@ -156,6 +160,133 @@ def _remote_services_status() -> dict:
         "ct": {"url": ct_url, "available": ct_ok, "reason": ct_reason},
         "xray": {"url": xray_url, "available": xray_ok, "reason": xray_reason},
     }
+
+
+def _tokenize_for_overlap(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]{2,}", (text or "").lower()))
+
+
+def _list_retrieval_candidates(generation_type: str, exclude_folder: Path | None = None) -> list[dict]:
+    candidates: list[dict] = []
+    if not OUTPUT_ROOT.exists():
+        return candidates
+
+    for folder in OUTPUT_ROOT.iterdir():
+        if not folder.is_dir():
+            continue
+        if exclude_folder is not None and folder.resolve() == exclude_folder.resolve():
+            continue
+        summary_path = folder / "summary.json"
+        if not summary_path.exists():
+            continue
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if summary.get("status") != "completed":
+            continue
+        if _normalize_generation_type(summary.get("generationType")) != generation_type:
+            continue
+        dicoms = sorted([p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".dcm"])
+        if not dicoms:
+            continue
+
+        request_prompt = ""
+        request_path = folder / "request.json"
+        if request_path.exists():
+            try:
+                request_data = json.loads(request_path.read_text(encoding="utf-8"))
+                request_prompt = str(request_data.get("prompt") or "")
+            except Exception:
+                request_prompt = ""
+
+        searchable_text = " ".join(
+            [
+                str(summary.get("prompt") or ""),
+                str(summary.get("description") or ""),
+                request_prompt,
+                str(summary.get("fileID") or ""),
+            ]
+        ).strip()
+        candidates.append(
+            {
+                "folder": folder,
+                "dicoms": dicoms,
+                "summary": summary,
+                "searchable_text": searchable_text,
+            }
+        )
+    return candidates
+
+
+def _has_retrieval_candidates(generation_type: str) -> bool:
+    return bool(_list_retrieval_candidates(generation_type))
+
+
+def _pick_best_retrieval_case(
+    payload: dict, generation_type: str, exclude_folder: Path | None = None
+) -> tuple[dict, float]:
+    candidates = _list_retrieval_candidates(generation_type, exclude_folder=exclude_folder)
+    if not candidates:
+        raise RuntimeError(f"No retrieval candidates available for generationType='{generation_type}'")
+
+    query_tokens = _tokenize_for_overlap((payload.get("prompt") or "").strip())
+    for candidate in candidates:
+        text_tokens = _tokenize_for_overlap(candidate["searchable_text"])
+        if not query_tokens:
+            score = 0.0
+        elif not text_tokens:
+            score = 0.0
+        else:
+            score = len(query_tokens.intersection(text_tokens)) / float(len(query_tokens))
+        candidate["score"] = score
+
+        created_at = str(candidate["summary"].get("createdAt") or "")
+        try:
+            candidate["created_at_sort"] = datetime.fromisoformat(created_at)
+        except Exception:
+            candidate["created_at_sort"] = datetime.min
+
+    candidates.sort(key=lambda item: (item.get("score", 0.0), item.get("created_at_sort", datetime.min)), reverse=True)
+    best = candidates[0]
+    return best, float(best.get("score", 0.0))
+
+
+def _copy_case_dicoms_with_new_uids(
+    source_dicoms: list[Path],
+    output_dir: Path,
+    payload: dict,
+    series_instance_uid: str,
+    study_instance_uid: str,
+    generation_type: str,
+) -> List[Path]:
+    if not source_dicoms:
+        raise RuntimeError("Retrieval source has no DICOM files")
+
+    out_files: List[Path] = []
+    for idx, src in enumerate(source_dicoms, start=1):
+        ds = pydicom.dcmread(str(src))
+        ds.StudyInstanceUID = study_instance_uid
+        ds.SeriesInstanceUID = series_instance_uid
+        ds.SOPInstanceUID = generate_uid()
+        if getattr(ds, "file_meta", None) is not None:
+            ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+        ds.SeriesDate = datetime.now().strftime("%Y%m%d")
+        ds.SeriesTime = datetime.now().strftime("%H%M%S")
+        ds.InstanceCreationDate = ds.SeriesDate
+        ds.InstanceCreationTime = ds.SeriesTime
+        ds.AccessionNumber = (payload.get("filename") or f"RETR-{generation_type}")[:16]
+        ds.InstanceNumber = idx
+        ds.PatientName = "Retrieved CT" if generation_type == "ct" else "Retrieved XRAY"
+        ds.SeriesDescription = payload.get("description") or f"Retrieved {generation_type.upper()} case"
+
+        if generation_type == "ct":
+            out_path = output_dir / f"slice_{idx:03d}.dcm"
+        else:
+            out_path = output_dir / f"xray_{idx:03d}.dcm"
+        ds.save_as(str(out_path), write_like_original=False)
+        out_files.append(out_path)
+    return out_files
 
 
 def _find_ct_asset() -> Path | None:
@@ -446,36 +577,86 @@ def _simulate_generation_job(file_id: str, payload: dict, series_instance_uid: s
         _set_progress("Running generation")
 
         folder.mkdir(parents=True, exist_ok=True)
+        request_path = folder / "request.json"
+        request_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
         generation_type = _normalize_generation_type(payload.get("generationType"))
+        prompt = (payload.get("prompt") or "").strip()
         study_instance_uid = payload.get("studyInstanceUID") or generate_uid()
         use_real_engine = GENERATION_ENGINE == "real"
+        engine_used = GENERATION_ENGINE
+        retrieval_used = False
+        retrieval_meta: dict | None = None
         if generation_type == "ct":
             if use_real_engine:
-                _set_progress("Generating CT via remote service")
-                volume, spacing = _generate_ct_via_remote(payload)
-                out_files = _write_ct_dicoms_from_volume(
-                    output_dir=folder,
-                    payload=payload,
-                    series_instance_uid=series_instance_uid,
-                    study_instance_uid=study_instance_uid,
-                    volume=volume,
-                    spacing=spacing,
-                )
+                try:
+                    _set_progress("Generating CT via remote service")
+                    volume, spacing = _generate_ct_via_remote(payload)
+                    out_files = _write_ct_dicoms_from_volume(
+                        output_dir=folder,
+                        payload=payload,
+                        series_instance_uid=series_instance_uid,
+                        study_instance_uid=study_instance_uid,
+                        volume=volume,
+                        spacing=spacing,
+                    )
+                except Exception as remote_exc:
+                    if not ENABLE_LEXICAL_RETRIEVAL_FALLBACK:
+                        raise
+                    _set_progress("CT service down: retrieving lexical match from local DB")
+                    best, score = _pick_best_retrieval_case(payload, "ct", exclude_folder=folder)
+                    out_files = _copy_case_dicoms_with_new_uids(
+                        source_dicoms=best["dicoms"],
+                        output_dir=folder,
+                        payload=payload,
+                        series_instance_uid=series_instance_uid,
+                        study_instance_uid=study_instance_uid,
+                        generation_type="ct",
+                    )
+                    retrieval_used = True
+                    engine_used = "retrieval"
+                    retrieval_meta = {
+                        "score": score,
+                        "sourceFileID": best["summary"].get("fileID"),
+                        "sourceFolder": best["folder"].name,
+                        "remoteError": str(remote_exc),
+                    }
             else:
                 _set_progress("Converting NIfTI to DICOM (CT asset fallback)")
                 out_files = _write_ct_dicoms(folder, payload, series_instance_uid, study_instance_uid)
         else:
             if use_real_engine:
-                _set_progress("Generating XRay via remote service")
-                pixels = _generate_xray_via_remote(payload)
-                out_files = _write_xray_dicom_from_pixels(
-                    output_dir=folder,
-                    payload=payload,
-                    series_instance_uid=series_instance_uid,
-                    study_instance_uid=study_instance_uid,
-                    pixels=pixels,
-                )
+                try:
+                    _set_progress("Generating XRay via remote service")
+                    pixels = _generate_xray_via_remote(payload)
+                    out_files = _write_xray_dicom_from_pixels(
+                        output_dir=folder,
+                        payload=payload,
+                        series_instance_uid=series_instance_uid,
+                        study_instance_uid=study_instance_uid,
+                        pixels=pixels,
+                    )
+                except Exception as remote_exc:
+                    if not ENABLE_LEXICAL_RETRIEVAL_FALLBACK:
+                        raise
+                    _set_progress("XRay service down: retrieving lexical match from local DB")
+                    best, score = _pick_best_retrieval_case(payload, "xray", exclude_folder=folder)
+                    out_files = _copy_case_dicoms_with_new_uids(
+                        source_dicoms=best["dicoms"],
+                        output_dir=folder,
+                        payload=payload,
+                        series_instance_uid=series_instance_uid,
+                        study_instance_uid=study_instance_uid,
+                        generation_type="xray",
+                    )
+                    retrieval_used = True
+                    engine_used = "retrieval"
+                    retrieval_meta = {
+                        "score": score,
+                        "sourceFileID": best["summary"].get("fileID"),
+                        "sourceFolder": best["folder"].name,
+                        "remoteError": str(remote_exc),
+                    }
             else:
                 _set_progress("Converting image to DICOM (Xray asset fallback)")
                 out_files = _write_xray_dicom(folder, payload, series_instance_uid, study_instance_uid)
@@ -483,7 +664,9 @@ def _simulate_generation_job(file_id: str, payload: dict, series_instance_uid: s
         summary = {
             "fileID": file_id,
             "generationType": generation_type,
-            "engine": GENERATION_ENGINE,
+            "engine": engine_used,
+            "prompt": prompt,
+            "retrievalFallbackUsed": retrieval_used,
             "studyInstanceUID": study_instance_uid,
             "seriesInstanceUID": series_instance_uid,
             "dicomCount": len(out_files),
@@ -492,6 +675,8 @@ def _simulate_generation_job(file_id: str, payload: dict, series_instance_uid: s
             "createdAt": datetime.now().isoformat(),
             "status": "completed",
         }
+        if retrieval_meta is not None:
+            summary["retrieval"] = retrieval_meta
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         print(
             f"[GENERATION] fileID={file_id} type={generation_type} "
@@ -647,9 +832,11 @@ def mode():
     allowed_generation_types = _allowed_generation_types_for_mode(BACKEND_MODE)
     services = _remote_services_status() if GENERATION_ENGINE == "real" else None
     if services:
-        if not services["ct"]["available"]:
+        if not services["ct"]["available"] and not (ENABLE_LEXICAL_RETRIEVAL_FALLBACK and _has_retrieval_candidates("ct")):
             allowed_generation_types.discard("ct")
-        if not services["xray"]["available"]:
+        if not services["xray"]["available"] and not (
+            ENABLE_LEXICAL_RETRIEVAL_FALLBACK and _has_retrieval_candidates("xray")
+        ):
             allowed_generation_types.discard("xray")
     return {
         "backendMode": BACKEND_MODE,
@@ -737,15 +924,16 @@ def start_generation(file_id: str, payload: dict):
         remote_url = _service_url_for_generation_type(generation_type)
         svc_ok, svc_reason = _check_remote_service(remote_url, generation_type)
         if not svc_ok:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": (
-                        f"{generation_type} service is not available "
-                        f"(url='{remote_url}', reason='{svc_reason}')"
-                    )
-                },
-            )
+            if not (ENABLE_LEXICAL_RETRIEVAL_FALLBACK and _has_retrieval_candidates(generation_type)):
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": (
+                            f"{generation_type} service is not available "
+                            f"(url='{remote_url}', reason='{svc_reason}') and retrieval fallback has no candidates"
+                        )
+                    },
+                )
     if generation_type not in allowed_generation_types:
         if BACKEND_MODE == "api-only":
             return JSONResponse(
