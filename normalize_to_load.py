@@ -359,12 +359,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Normalize/convert studies for loading into OHIF/Orthanc.")
     parser.add_argument(
         "--input",
-        default=r"D:\Tesi_Codici\to_load",
+        default=r".\to_load",
         help="Input folder containing DICOM/images/NIfTI.",
     )
     parser.add_argument(
         "--output",
-        default=r"D:\Tesi_Codici\normalized_to_load",
+        default=r".\normalized_to_load",
         help="Output folder for normalized DICOM files.",
     )
     parser.add_argument(
