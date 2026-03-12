@@ -28,12 +28,34 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
     const GENERATIVE_AI_PLACEHOLDER_STUDY_UID =
       '1.2.826.0.1.3680043.8.498.92334923612841918328708913924036869452';
     const browserHost = window.location.hostname || 'localhost';
-    const defaultServerCandidates = [
-      `http://${browserHost}:8000`,
-      'http://localhost:8000',
-      'http://localhost:5000',
-      'http://149.165.154.176:5000',
-    ];
+    const browserProtocol = window.location.protocol || 'http:';
+    const isSecurePage = browserProtocol === 'https:';
+    const isLocalHost = ['localhost', '127.0.0.1', '::1'].includes(browserHost);
+    const configuredServerUrlRaw =
+      window?.config?.genaiServerUrl ||
+      window?.config?.GENAI_SERVER_URL ||
+      window.localStorage.getItem('genaiServerUrl') ||
+      '';
+    const configuredServerUrl = configuredServerUrlRaw.trim().replace(/\/+$/, '');
+    const defaultServerCandidates = (() => {
+      const candidates = [];
+      if (configuredServerUrl) {
+        candidates.push(configuredServerUrl);
+      }
+      if (isSecurePage) {
+        // In HTTPS deployments the backend should be exposed via the same host.
+        candidates.push(`${window.location.origin}/api`);
+      }
+      if (!isSecurePage && browserHost) {
+        candidates.push(`http://${browserHost}:8000`);
+      }
+      if (!isSecurePage || isLocalHost) {
+        candidates.push('http://localhost:8000');
+        candidates.push('http://localhost:5000');
+        candidates.push('http://149.165.154.176:5000');
+      }
+      return [...new Set(candidates.map(url => url.replace(/\/+$/, '')))];
+    })();
     const [serverUrl, setServerUrl] = useState(defaultServerCandidates[0]);
     const orthancAuth = `Basic ${window.btoa('orthanc:orthanc')}`;
 
@@ -90,10 +112,10 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
           };
         }
       } catch (statusError) {
-        // Fallback for older backends without /status endpoint.
+        // Fallback for backends that expose /health but not /status.
         try {
-          const rootResponse = await axios.get(candidateUrl);
-          if (rootResponse.status === 200) {
+          const healthResponse = await axios.get(`${candidateUrl}/health`);
+          if (healthResponse.status === 200) {
             return {
               ok: true,
               processIsRunning: false,
@@ -102,7 +124,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
               serviceHealth: { ct: true, xray: true },
             };
           }
-        } catch (rootError) {
+        } catch (healthError) {
           return {
             ok: false,
             processIsRunning: false,
