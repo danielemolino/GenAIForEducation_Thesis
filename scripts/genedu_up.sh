@@ -69,7 +69,7 @@ if has_tag orthanc; then
 fi
 
 if has_tag viewer; then
-  start_bg "viewer" "cd '${ROOT_DIR}/Viewer' && yarn dev:orthanc"
+  start_bg "viewer" "cd '${ROOT_DIR}/Viewer' && exec yarn dev:orthanc"
 fi
 
 if has_tag backend; then
@@ -80,7 +80,7 @@ if has_tag backend; then
   start_bg "backend" \
     "cd '${ROOT_DIR}/BackendModelli' && \
      BACKEND_MODE='${BACKEND_MODE}' GENERATION_ENGINE='${GENERATION_ENGINE}' REMOTE_INFERENCE_URL='${REMOTE_INFERENCE_URL}' \
-     '${GENEDU_PYTHON}' -m uvicorn main:app --host 0.0.0.0 --port 8000 --access-log"
+     exec '${GENEDU_PYTHON}' -m uvicorn main:app --host 0.0.0.0 --port 8000 --access-log"
 fi
 
 echo "[genedu] done. tags=${TAGS}"

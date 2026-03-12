@@ -28,9 +28,16 @@ has_tag() {
 
 stop_by_pidfile() {
   local name="$1"
+  local pattern="${2:-}"
   local pid_file="${PID_DIR}/${name}.pid"
   if [[ ! -f "${pid_file}" ]]; then
     echo "[genedu] ${name} pidfile not found"
+    if [[ -n "${pattern}" ]]; then
+      echo "[genedu] trying pattern stop for ${name}: ${pattern}"
+      pkill -TERM -f "${pattern}" 2>/dev/null || true
+      sleep 1
+      pkill -KILL -f "${pattern}" 2>/dev/null || true
+    fi
     return 0
   fi
 
@@ -38,24 +45,35 @@ stop_by_pidfile() {
   pid="$(cat "${pid_file}" || true)"
   if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
     echo "[genedu] stopping ${name} pid=${pid}"
+    local pgid
+    pgid="$(ps -o pgid= -p "${pid}" 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ -n "${pgid}" ]] && kill -TERM -"${pgid}" 2>/dev/null || true
+    pkill -TERM -P "${pid}" 2>/dev/null || true
     kill "${pid}" || true
     sleep 1
     if kill -0 "${pid}" 2>/dev/null; then
       echo "[genedu] force killing ${name} pid=${pid}"
+      [[ -n "${pgid}" ]] && kill -KILL -"${pgid}" 2>/dev/null || true
+      pkill -KILL -P "${pid}" 2>/dev/null || true
       kill -9 "${pid}" || true
     fi
   else
     echo "[genedu] ${name} already stopped"
   fi
+  if [[ -n "${pattern}" ]]; then
+    pkill -TERM -f "${pattern}" 2>/dev/null || true
+    sleep 1
+    pkill -KILL -f "${pattern}" 2>/dev/null || true
+  fi
   rm -f "${pid_file}"
 }
 
 if has_tag backend; then
-  stop_by_pidfile "backend"
+  stop_by_pidfile "backend" "uvicorn main:app"
 fi
 
 if has_tag viewer; then
-  stop_by_pidfile "viewer"
+  stop_by_pidfile "viewer" "webpack serve|lerna run dev:orthanc|yarn dev:orthanc"
 fi
 
 if has_tag orthanc; then

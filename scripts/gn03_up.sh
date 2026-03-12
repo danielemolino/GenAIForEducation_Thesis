@@ -81,14 +81,14 @@ CT_WORKER_URL="http://127.0.0.1:${CT_PORT}"
 if has_service ct; then
   start_bg "ct_worker" \
     "cd '${ROOT_DIR}/BackendModelli' && \
-     '${GN03_PYTHON}' -m uvicorn remote_services.workers.ct_worker:app --host 0.0.0.0 --port '${CT_PORT}' --access-log"
+     exec '${GN03_PYTHON}' -m uvicorn remote_services.workers.ct_worker:app --host 0.0.0.0 --port '${CT_PORT}' --access-log"
 fi
 
 if has_service xray; then
   XRAY_WORKER_URL="http://127.0.0.1:${XRAY_PORT}"
   start_bg "xray_worker" \
     "cd '${ROOT_DIR}/BackendModelli' && \
-     '${GN03_PYTHON}' -m uvicorn remote_services.workers.xray_worker:app --host 0.0.0.0 --port '${XRAY_PORT}' --access-log"
+     exec '${GN03_PYTHON}' -m uvicorn remote_services.workers.xray_worker:app --host 0.0.0.0 --port '${XRAY_PORT}' --access-log"
 fi
 
 if has_service gateway; then
@@ -96,7 +96,7 @@ if has_service gateway; then
     "cd '${ROOT_DIR}/BackendModelli' && \
      CT_WORKER_URL='${CT_WORKER_URL}' XRAY_WORKER_URL='${XRAY_WORKER_URL}' \
      XRAY_HEALTH_PATH='${XRAY_HEALTH_PATH}' XRAY_INFER_PATH='${XRAY_INFER_PATH}' XRAY_LEGACY_TASK='${XRAY_LEGACY_TASK}' \
-     '${GN03_PYTHON}' -m uvicorn remote_services.gateway.main:app --host 0.0.0.0 --port '${GATEWAY_PORT}' --access-log"
+     exec '${GN03_PYTHON}' -m uvicorn remote_services.gateway.main:app --host 0.0.0.0 --port '${GATEWAY_PORT}' --access-log"
 fi
 
 echo "[gn03] done. services=${SERVICES}"
