@@ -151,6 +151,11 @@ module.exports = (env, argv) => {
         overlay: { errors: true, warnings: false },
       },
       proxy: {
+        '/api': {
+          target: 'http://localhost:8000',
+          changeOrigin: true,
+          pathRewrite: { '^/api': '' },
+        },
         '/dicomweb': 'http://localhost:5000',
         '/pacs': {
           target: 'http://localhost:8042',
