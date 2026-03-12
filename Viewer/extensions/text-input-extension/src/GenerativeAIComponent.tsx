@@ -1,4 +1,4 @@
-import React,{useEffect, useState} from 'react';
+import React,{useEffect, useRef, useState} from 'react';
 import {ActionButtons} from '@ohif/ui'
 import { useTranslation } from 'react-i18next';
 import WrappedPreviewStudyBrowser from './components/WrappedPreviewStudyBrowser'
@@ -13,10 +13,11 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
     const [modelIsRunning, setModelIsRunning] = useState(false); // if model in generating images in backend
     const [isServerRunning, setIsServerRunning] = useState(false); // if connection to server possible
     const [dataIsUploading, setDataIsUploading] = useState(false); // if data is uploading to orthanc server
-    const [oldModelIsRunning, setOldModelIsRunning] = useState(false);
     const [generatingFileSeriesInstanceUID, setGeneratingFileSeriesInstanceUID] = useState('');
     const [generatingFilePrompt, setGeneratingFilePrompt] = useState('');
     const [fileID, setFileID] = useState('');
+    const [jobStatus, setJobStatus] = useState('idle');
+    const [jobQueuePosition, setJobQueuePosition] = useState(null);
     const [generationType, setGenerationType] = useState('');
     const [lastGeneratedStudyForViewer, setLastGeneratedStudyForViewer] = useState('');
     const [hasUsableInputStudy, setHasUsableInputStudy] = useState(false);
@@ -57,6 +58,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       return [...new Set(candidates.map(url => url.replace(/\/+$/, '')))];
     })();
     const [serverUrl, setServerUrl] = useState(defaultServerCandidates[0]);
+    const completedUploadRef = useRef({});
     const orthancAuth = `Basic ${window.btoa('orthanc:orthanc')}`;
 
     const _toServiceHealth = (servicesData, fallbackAllowedTypes = null) => {
@@ -177,45 +179,16 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
         return () => clearInterval(interval); // Cleanup on component unmount
       }, []);
 
-      // follow status of MedSyn: when finished download images from backend and upload to Orthanc
+      // Track only the current tab job (fileID) to avoid cross-tab races.
       useEffect(() => {
-        const checkModelIsRunning = async () => {
-            try {
-                const status = await _checkServerCandidate(serverUrl);
-                if (!status.ok) {
-                  return;
-                }
-                if (Array.isArray(status.allowedGenerationTypes)) {
-                  setAllowedGenerationTypes(status.allowedGenerationTypes);
-                }
-                if (status.serviceHealth) {
-                  setServiceHealth(status.serviceHealth);
-                }
-                const processIsRunning = status.processIsRunning;
-                setModelIsRunning((prevModelIsRunning) => {
-                    if (prevModelIsRunning === false && processIsRunning === true) {
-                        console.log("Model started");
-                    } else if (prevModelIsRunning === true && processIsRunning === false) {
-                        console.log("Model ended");
-                        console.log("Try to download data");
-
-                        executeDownloadAndUpload();
-                    }
-                    setOldModelIsRunning(prevModelIsRunning);
-                    return processIsRunning;
-                });
-            } catch (error) {
-                console.log('Error checking for model status:', error);
-            }
-        };
-        const executeDownloadAndUpload = async () => {
+        const executeDownloadAndUpload = async (targetFileID, targetSeriesUID, targetPrompt) => {
           try {
               let uploadResults;
               try {
-                uploadResults = await _uploadGeneratedFolderFromBackend(fileID);
+                uploadResults = await _uploadGeneratedFolderFromBackend(targetFileID);
               } catch (serverSideUploadError) {
                 // Fallback for older backend versions without upload endpoint.
-                uploadResults = await _downloadAndUploadImages(fileID);
+                uploadResults = await _downloadAndUploadImages(targetFileID);
               }
               try {
                 await _enforceOrthancStudyRetention();
@@ -223,19 +196,19 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                 console.warn('Orthanc retention cleanup failed, continuing:', retentionError);
               }
               try {
-                await _addMetadataToSeries(generatingFileSeriesInstanceUID, generatingFilePrompt, 'SeriesPrompt');
+                await _addMetadataToSeries(targetSeriesUID, targetPrompt, 'SeriesPrompt');
               } catch (metadataError) {
                 console.warn('Series metadata update failed, continuing:', metadataError);
               }
               const generatedStudyInstanceUID = await _resolveGeneratedStudyInstanceUID(
                 uploadResults,
-                generatingFileSeriesInstanceUID
+                targetSeriesUID
               );
               try {
                 const generatedStudyOrthancID = _resolveGeneratedStudyOrthancID(uploadResults);
                 await _addMetadataToStudy(
                   generatedStudyInstanceUID,
-                  generatingFilePrompt,
+                  targetPrompt,
                   'Prompt',
                   generatedStudyOrthancID
                 );
@@ -255,11 +228,6 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
               console.error('Error in downloading and uploading images:', error);
               showErrorFeedback(error);
           }
-        };
-        const reloadWindow = () => {
-          
-          console.log('Modal is closing');        
-          window.location.reload();
         };
         const showErrorFeedback=(error)=>{
           const status = error?.response?.status;
@@ -288,52 +256,68 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
           });
 
         }
+        const pollCurrentJobSummary = async () => {
+          if (!fileID) {
+            setModelIsRunning(false);
+            setJobStatus('idle');
+            setJobQueuePosition(null);
+            return;
+          }
+          try {
+            const response = await axios.get(`${serverUrl}/files/${fileID}/summary`);
+            const summary = response?.data || {};
+            const statusValue = (summary.status || '').toLowerCase();
+            const queuePos = Number.isFinite(Number(summary.queuePosition))
+              ? Number(summary.queuePosition)
+              : null;
+            if (queuePos && queuePos > 0) {
+              setJobQueuePosition(queuePos);
+            } else {
+              setJobQueuePosition(null);
+            }
 
-        const showSuccessFeedback = () => {
-            return new Promise((resolve) => {
-                uiModalService.show({
-                    title: 'Info',
-                    containerDimensions: 'w-1/2',
-
-                    content: () => {
-                        return (
-                            <div>
-                                <p className="mt-2 p-2 mb-8">
-                                  The CT scan was generated successfully
-                                </p>
-                                <div className="flex items-center p-2 ml-8">
-                                  <div className="text-primary-main  mr-2">Name:</div>
-                                  <div className="text-blue-300  mr-2">{promptHeaderData}</div>
-                                </div>
-                                <div className="flex flex-col mb-8 p-2 ml-8">
-                                  <div className="text-primary-main  mr-2">Prompt:</div>
-                                  <div className="mr-2">{promptData}</div>
-                                </div>
-                                  <ActionButtons
-                                      t={t}
-                                      actions={[
-
-                                          {
-                                              label: 'Ok',
-                                              onClick: reloadPage,
-                                          },
-                                      ]}
-                                      disabled={disabled}
-                                  />
-                              
-                            </div>
-                        );
-                    },
-
-                });
-            });
+            if (statusValue === 'queued' || statusValue === 'running') {
+              setModelIsRunning(true);
+              setJobStatus(statusValue || 'running');
+              return;
+            }
+            if (statusValue === 'completed') {
+              setModelIsRunning(false);
+              setJobStatus('completed');
+              setJobQueuePosition(null);
+              if (completedUploadRef.current[fileID]) {
+                return;
+              }
+              completedUploadRef.current[fileID] = true;
+              await executeDownloadAndUpload(fileID, generatingFileSeriesInstanceUID, generatingFilePrompt);
+              return;
+            }
+            if (statusValue === 'error') {
+              setModelIsRunning(false);
+              setJobStatus('error');
+              setJobQueuePosition(null);
+              if (completedUploadRef.current[`${fileID}:error`]) {
+                return;
+              }
+              completedUploadRef.current[`${fileID}:error`] = true;
+              if (summary.error) {
+                showErrorFeedback({ message: summary.error });
+              }
+              return;
+            }
+          } catch (error) {
+            if (error?.response?.status === 404) {
+              // Job not created yet or cleaned up. Do not show noisy errors in other tabs.
+              return;
+            }
+            console.warn('Error polling job summary:', error);
+          }
         };
 
-        checkModelIsRunning();
-        const interval = setInterval(checkModelIsRunning, 5000); // Check every 5 seconds
-
-        return () => clearInterval(interval); // Cleanup on component unmount
-    }, [fileID, generatingFileSeriesInstanceUID, serverUrl]);
+        pollCurrentJobSummary();
+        const interval = setInterval(pollCurrentJobSummary, 5000);
+        return () => clearInterval(interval);
+    }, [fileID, generatingFileSeriesInstanceUID, generatingFilePrompt, serverUrl]);
 
 
     // update text of previews
@@ -466,6 +450,9 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
 
         const response = await axios.post(`${serverUrl}/files/${currentFileID}`, payload, { headers });
         console.log('Start model');
+        setModelIsRunning(true);
+        setJobStatus('queued');
+        setJobQueuePosition(response?.data?.queuePosition || null);
         setGeneratingFilePrompt(payload.prompt || '');
         setGeneratingFileSeriesInstanceUID(response.data.seriesInstanceUID);
         try {
@@ -475,6 +462,9 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
           // Ignore storage errors
         }
       } catch (error) {
+        setModelIsRunning(false);
+        setJobStatus('error');
+        setJobQueuePosition(null);
         const apiError =
           error?.response?.data?.error ||
           error?.response?.data?.detail ||
@@ -1011,14 +1001,11 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
 
     };
     const normalizedGenerationType = generationType === 'xrays' ? 'xray' : generationType;
-    const selectedTypeServiceUp =
-      !normalizedGenerationType ||
-      (normalizedGenerationType === 'ct' ? serviceHealth.ct : serviceHealth.xray);
     const selectedTypeAllowed =
       !normalizedGenerationType ||
       allowedGenerationTypes.length === 0 ||
       allowedGenerationTypes.includes(normalizedGenerationType);
-    const generationReady = isServerRunning && selectedTypeAllowed && selectedTypeServiceUp;
+    const generationReady = isServerRunning && selectedTypeAllowed;
 
 
     return (
@@ -1061,10 +1048,10 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                             <option value="" disabled>
                               Select generation type
                             </option>
-                            <option value="ct" disabled={(allowedGenerationTypes.length > 0 && !allowedGenerationTypes.includes('ct')) || !serviceHealth.ct}>
+                            <option value="ct" disabled={allowedGenerationTypes.length > 0 && !allowedGenerationTypes.includes('ct')}>
                               Generate CT
                             </option>
-                            <option value="xrays" disabled={(allowedGenerationTypes.length > 0 && !allowedGenerationTypes.includes('xray')) || !serviceHealth.xray}>
+                            <option value="xrays" disabled={allowedGenerationTypes.length > 0 && !allowedGenerationTypes.includes('xray')}>
                               Generate X-RAYS
                             </option>
                         </select>
@@ -1098,6 +1085,12 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                     serverUrl={serverUrl}
                     serviceHealth={serviceHealth}
                 />
+                {fileID ? (
+                  <div className="mt-2 text-xs text-gray-300">
+                    Job {fileID}: {jobStatus}
+                    {jobQueuePosition ? ` (queue position: ${jobQueuePosition})` : ''}
+                  </div>
+                ) : null}
                 <div className="mt-3 flex justify-end">
                     <button
                         type="button"

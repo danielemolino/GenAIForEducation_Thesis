@@ -5,6 +5,7 @@ import threading
 import time
 import io
 import re
+from collections import deque
 from typing import List
 import json
 import base64
@@ -56,6 +57,10 @@ _process_is_running = False
 _progress_text = "Idle"
 _state_lock = threading.Lock()
 _bootstrap_lock = threading.Lock()
+_queue_condition = threading.Condition()
+_job_queue: deque[dict] = deque()
+_active_file_id: str | None = None
+_queue_worker_started = False
 
 try:
     import nibabel as nib
@@ -88,6 +93,80 @@ def _set_progress(message: str) -> None:
 def _get_progress() -> str:
     with _state_lock:
         return _progress_text
+
+
+def _write_summary(file_id: str, summary: dict) -> None:
+    folder = OUTPUT_ROOT / file_id
+    folder.mkdir(parents=True, exist_ok=True)
+    summary_path = folder / "summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+
+def _queue_state() -> dict:
+    with _queue_condition:
+        return {
+            "activeFileID": _active_file_id,
+            "queueLength": len(_job_queue),
+            "queuedFileIDs": [job.get("file_id") for job in _job_queue],
+        }
+
+
+def _queue_position_for_file(file_id: str) -> int | None:
+    with _queue_condition:
+        if _active_file_id == file_id:
+            return 1
+        for index, job in enumerate(_job_queue, start=1):
+            if job.get("file_id") == file_id:
+                return index + (1 if _active_file_id else 0)
+    return None
+
+
+def _enqueue_job(job: dict) -> int:
+    with _queue_condition:
+        _job_queue.append(job)
+        queue_position = len(_job_queue) + (1 if _active_file_id else 0)
+        _queue_condition.notify()
+        return queue_position
+
+
+def _dequeue_job() -> dict:
+    global _active_file_id
+    with _queue_condition:
+        while not _job_queue:
+            _queue_condition.wait()
+        job = _job_queue.popleft()
+        _active_file_id = str(job.get("file_id"))
+        return job
+
+
+def _clear_active_job() -> None:
+    global _active_file_id
+    with _queue_condition:
+        _active_file_id = None
+
+
+def _queue_worker_loop() -> None:
+    while True:
+        job = _dequeue_job()
+        file_id = str(job["file_id"])
+        payload = dict(job["payload"])
+        series_instance_uid = str(job["series_instance_uid"])
+        _set_process_state(True)
+        try:
+            _simulate_generation_job(file_id, payload, series_instance_uid)
+        finally:
+            _set_process_state(False)
+            _clear_active_job()
+
+
+def _ensure_queue_worker_started() -> None:
+    global _queue_worker_started
+    with _queue_condition:
+        if _queue_worker_started:
+            return
+        worker = threading.Thread(target=_queue_worker_loop, daemon=True, name="generation-queue-worker")
+        worker.start()
+        _queue_worker_started = True
 
 
 def _normalize_to_uint16(arr: np.ndarray) -> np.ndarray:
@@ -583,6 +662,16 @@ def _simulate_generation_job(file_id: str, payload: dict, series_instance_uid: s
         generation_type = _normalize_generation_type(payload.get("generationType"))
         prompt = (payload.get("prompt") or "").strip()
         study_instance_uid = payload.get("studyInstanceUID") or generate_uid()
+        running_summary = {
+            "fileID": file_id,
+            "generationType": generation_type,
+            "prompt": prompt,
+            "status": "running",
+            "createdAt": datetime.now().isoformat(),
+            "studyInstanceUID": study_instance_uid,
+            "seriesInstanceUID": series_instance_uid,
+        }
+        _write_summary(file_id, running_summary)
         use_real_engine = GENERATION_ENGINE == "real"
         engine_used = GENERATION_ENGINE
         retrieval_used = False
@@ -696,8 +785,6 @@ def _simulate_generation_job(file_id: str, payload: dict, series_instance_uid: s
         folder.mkdir(parents=True, exist_ok=True)
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         _set_progress(f"Error: {exc}")
-    finally:
-        _set_process_state(False)
 
 
 def _upload_folder_to_orthanc(folder: Path) -> List[dict]:
@@ -858,7 +945,13 @@ def services_status():
 
 @app.get("/status")
 def status():
-    return {"process_is_running": _get_process_state()}
+    queue = _queue_state()
+    return {
+        "process_is_running": _get_process_state(),
+        "activeFileID": queue["activeFileID"],
+        "queueLength": queue["queueLength"],
+        "queuedFileIDs": queue["queuedFileIDs"],
+    }
 
 
 @app.get("/progress")
@@ -904,9 +997,6 @@ def start_generation(file_id: str, payload: dict):
     if not prompt:
         return JSONResponse(status_code=400, content={"error": "Prompt is required"})
 
-    if _get_process_state():
-        return JSONResponse(status_code=409, content={"error": "A generation is already running"})
-
     if BACKEND_MODE not in VALID_BACKEND_MODES:
         return JSONResponse(
             status_code=500,
@@ -951,20 +1041,31 @@ def start_generation(file_id: str, payload: dict):
         )
 
     series_instance_uid = generate_uid()
-    _set_process_state(True)
-
-    worker = threading.Thread(
-        target=_simulate_generation_job,
-        args=(file_id, payload, series_instance_uid),
-        daemon=True,
+    _ensure_queue_worker_started()
+    queue_position = _enqueue_job(
+        {
+            "file_id": file_id,
+            "payload": payload,
+            "series_instance_uid": series_instance_uid,
+        }
     )
-    worker.start()
+    queued_summary = {
+        "fileID": file_id,
+        "generationType": generation_type,
+        "prompt": prompt,
+        "status": "queued",
+        "queuePosition": queue_position,
+        "createdAt": datetime.now().isoformat(),
+        "seriesInstanceUID": series_instance_uid,
+    }
+    _write_summary(file_id, queued_summary)
 
     return {
-        "message": "Generation started",
+        "message": "Generation queued",
         "prompt": prompt,
         "seriesInstanceUID": series_instance_uid,
         "generationType": generation_type,
+        "queuePosition": queue_position,
         "fileID": file_id,
     }
 
@@ -987,7 +1088,13 @@ def get_generation_summary(folder_name: str):
         return JSONResponse(status_code=404, content={"error": "Summary not found"})
 
     try:
-        return json.loads(summary_path.read_text(encoding="utf-8"))
+        data = json.loads(summary_path.read_text(encoding="utf-8"))
+        status_value = str(data.get("status") or "").lower()
+        if status_value in {"queued", "running"}:
+            queue_position = _queue_position_for_file(folder_name)
+            if queue_position is not None:
+                data["queuePosition"] = queue_position
+        return data
     except Exception as exc:
         return JSONResponse(status_code=500, content={"error": f"Invalid summary.json: {exc}"})
 
