@@ -132,7 +132,7 @@ function modeFactory({ modeConfiguration }) {
           return {
             id: ohif.layout,
             props: {
-              leftPanels: ['text-input-extension.panelModule.text-input-side-panel'], //, ohif.leftPanel
+              leftPanels: ['text-input-extension.panelModule.text-input-side-panel'],
               leftPanelClosed: true,
               rightPanels: ['text-input-extension.panelModule.generative-ai-panel'], //segmentation.panelTool
               viewports: [
