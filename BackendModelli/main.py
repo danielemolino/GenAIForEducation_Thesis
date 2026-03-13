@@ -178,6 +178,19 @@ def _normalize_to_uint16(arr: np.ndarray) -> np.ndarray:
     return (arr * 4095).astype(np.uint16)
 
 
+def _normalize_xray_to_uint16(arr: np.ndarray) -> np.ndarray:
+    arr = arr.astype(np.float32)
+    low, high = np.percentile(arr, [1, 99])
+    if high <= low:
+        low = float(np.min(arr))
+        high = float(np.max(arr))
+    if high <= low:
+        return np.zeros_like(arr, dtype=np.uint16)
+    arr = np.clip(arr, low, high)
+    arr = (arr - low) / (high - low)
+    return (arr * 65535.0).astype(np.uint16)
+
+
 def _normalize_generation_type(raw_generation_type: str | None) -> str:
     generation_type = (raw_generation_type or "ct").lower()
     if generation_type == "xrays":
@@ -395,7 +408,7 @@ def _load_ct_volume() -> tuple[np.ndarray, tuple[float, float, float]]:
     if ct_file is None:
         raise RuntimeError(f"Asset CT non trovato in {ASSETS_ROOT}")
 
-    nii = nib.load(str(ct_file))
+    nii = nib.as_closest_canonical(nib.load(str(ct_file)))
     volume = nii.get_fdata().astype(np.float32)
     zooms = nii.header.get_zooms()
     if volume.ndim == 2:
@@ -412,11 +425,9 @@ def _load_ct_volume() -> tuple[np.ndarray, tuple[float, float, float]]:
     volume = (volume * 1624.0) - 1024.0
     volume = volume.astype(np.int16)
 
-    # Allineamento orientamento stile MedSyn per immagini AI.
-    volume = np.rot90(volume, k=1, axes=(0, 1))
-    # Keep spacing consistent with the rotated in-plane axes.
-    row_spacing = float(abs(zooms[1])) if len(zooms) > 1 else 1.0
-    col_spacing = float(abs(zooms[0])) if len(zooms) > 0 else 1.0
+    # Keep canonical spacing order (X, Y, Z).
+    row_spacing = float(abs(zooms[0])) if len(zooms) > 0 else 1.0
+    col_spacing = float(abs(zooms[1])) if len(zooms) > 1 else 1.0
     slice_spacing = float(abs(zooms[2])) if len(zooms) > 2 else 1.0
     return volume, (row_spacing, col_spacing, slice_spacing)
 
@@ -428,13 +439,13 @@ def _load_xray_pixels() -> np.ndarray:
 
     if xray_file.suffix.lower() == ".dcm":
         ds = pydicom.dcmread(str(xray_file))
-        return _normalize_to_uint16(ds.pixel_array)
+        return _normalize_xray_to_uint16(ds.pixel_array)
 
     if Image is None:
         raise RuntimeError("Pillow non installato")
 
     img = Image.open(xray_file).convert("L")
-    return _normalize_to_uint16(np.array(img))
+    return _normalize_xray_to_uint16(np.array(img))
 
 
 def _create_base_dataset(
@@ -529,14 +540,15 @@ def _write_ct_dicoms_from_volume(
             sop_instance_uid=sop_instance_uid,
         )
 
-        pixels = np.fliplr(volume[:, :, z]).astype(np.int16)
+        pixels = volume[:, :, z].astype(np.int16)
 
         ds.Modality = "CT"
         ds.SeriesDescription = series_description
         ds.SeriesNumber = 1
         ds.InstanceNumber = idx
         ds.ImagePositionPatient = [0.0, 0.0, float(z * slice_spacing)]
-        ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
+        # Keep slices consistent with RAS-style viewing while writing valid DICOM LPS direction cosines.
+        ds.ImageOrientationPatient = [-1, 0, 0, 0, -1, 0]
         ds.SliceThickness = float(slice_spacing)
         ds.PixelSpacing = [float(row_spacing), float(col_spacing)]
         ds.SamplesPerPixel = 1
@@ -603,11 +615,14 @@ def _write_xray_dicom_from_pixels(
     ds.Rows = int(pixels.shape[0])
     ds.Columns = int(pixels.shape[1])
     ds.BitsAllocated = 16
-    ds.BitsStored = 12
-    ds.HighBit = 11
+    ds.BitsStored = 16
+    ds.HighBit = 15
     ds.PixelRepresentation = 0
-    ds.WindowWidth = 2000
-    ds.WindowCenter = 1000
+    pixel_min = int(np.min(pixels))
+    pixel_max = int(np.max(pixels))
+    ds.WindowWidth = max(1, pixel_max - pixel_min)
+    ds.WindowCenter = int(pixel_min + ds.WindowWidth / 2)
+    ds.VOILUTFunction = "LINEAR"
     ds.PixelData = pixels.tobytes()
 
     ds.save_as(str(out_path), write_like_original=False)
@@ -644,7 +659,7 @@ def _generate_xray_via_remote(payload: dict) -> np.ndarray:
     pixels = _decode_numpy_from_base64(response["pixels_npy_b64"])
     if pixels.ndim != 2:
         raise RuntimeError(f"XRay remote pixels shape invalid: {pixels.shape}")
-    return _normalize_to_uint16(pixels)
+    return _normalize_xray_to_uint16(pixels)
 
 
 def _simulate_generation_job(file_id: str, payload: dict, series_instance_uid: str) -> None:
