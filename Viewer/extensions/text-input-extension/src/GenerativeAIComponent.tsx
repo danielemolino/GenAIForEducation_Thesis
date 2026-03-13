@@ -19,6 +19,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
     const [jobStatus, setJobStatus] = useState('idle');
     const [jobQueuePosition, setJobQueuePosition] = useState(null);
     const [generationType, setGenerationType] = useState('');
+    const [readOnlyMode, setReadOnlyMode] = useState(false);
     const [lastGeneratedStudyForViewer, setLastGeneratedStudyForViewer] = useState('');
     const [hasUsableInputStudy, setHasUsableInputStudy] = useState(false);
     const [allowedGenerationTypes, setAllowedGenerationTypes] = useState([]);
@@ -38,8 +39,19 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       window.localStorage.getItem('genaiServerUrl') ||
       '';
     const configuredServerUrl = configuredServerUrlRaw.trim().replace(/\/+$/, '');
+    const configuredServerCandidatesRaw =
+      window?.config?.genaiServerCandidates ||
+      window?.config?.GENAI_SERVER_CANDIDATES ||
+      '';
+    const configuredServerCandidates = Array.isArray(configuredServerCandidatesRaw)
+      ? configuredServerCandidatesRaw
+      : String(configuredServerCandidatesRaw || '')
+          .split(',')
+          .map(value => value.trim())
+          .filter(Boolean);
     const defaultServerCandidates = (() => {
       const candidates = [];
+      candidates.push(...configuredServerCandidates);
       if (configuredServerUrl) {
         candidates.push(configuredServerUrl);
       }
@@ -57,9 +69,16 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       }
       return [...new Set(candidates.map(url => url.replace(/\/+$/, '')))];
     })();
+    const configuredPacsBaseRaw =
+      window?.config?.orthancBasePath ||
+      window?.config?.ORTHANC_BASE_PATH ||
+      window.localStorage.getItem('orthancBasePath') ||
+      '/pacs';
+    const pacsBasePath = configuredPacsBaseRaw.trim().replace(/\/+$/, '') || '/pacs';
     const [serverUrl, setServerUrl] = useState(defaultServerCandidates[0]);
     const completedUploadRef = useRef({});
     const orthancAuth = `Basic ${window.btoa('orthanc:orthanc')}`;
+    const _pacsUrl = path => `${pacsBasePath}${path.startsWith('/') ? path : `/${path}`}`;
 
     const _toServiceHealth = (servicesData, fallbackAllowedTypes = null) => {
       if (servicesData?.ct && servicesData?.xray) {
@@ -84,11 +103,13 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
           let modelAvailable = true;
           let modeAllowedGenerationTypes = null;
           let currentServiceHealth = { ct: false, xray: false };
+          let modeReadOnly = false;
           try {
             const modeResponse = await axios.get(`${candidateUrl}/mode`);
             const allowed = modeResponse?.data?.allowedGenerationTypes;
             modeAllowedGenerationTypes = Array.isArray(allowed) ? allowed : null;
             currentServiceHealth = _toServiceHealth(modeResponse?.data?.services, modeAllowedGenerationTypes);
+            modeReadOnly = !!modeResponse?.data?.readOnly;
             if (Array.isArray(allowed) && allowed.length === 0) {
               modelAvailable = false;
             }
@@ -101,6 +122,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
               const servicesResponse = await axios.get(`${candidateUrl}/services/status`);
               currentServiceHealth = _toServiceHealth(servicesResponse?.data?.services, null);
               modelAvailable = currentServiceHealth.ct || currentServiceHealth.xray;
+              modeReadOnly = !!servicesResponse?.data?.readOnly;
             } catch (servicesError) {
               modelAvailable = true;
             }
@@ -111,6 +133,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
             modelAvailable,
             allowedGenerationTypes: modeAllowedGenerationTypes,
             serviceHealth: currentServiceHealth,
+            readOnly: modeReadOnly,
           };
         }
       } catch (statusError) {
@@ -124,6 +147,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
               modelAvailable: true,
               allowedGenerationTypes: null,
               serviceHealth: { ct: true, xray: true },
+              readOnly: false,
             };
           }
         } catch (healthError) {
@@ -133,6 +157,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
             modelAvailable: false,
             allowedGenerationTypes: null,
             serviceHealth: { ct: false, xray: false },
+            readOnly: false,
           };
         }
       }
@@ -142,6 +167,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
         modelAvailable: false,
         allowedGenerationTypes: null,
         serviceHealth: { ct: false, xray: false },
+        readOnly: false,
       };
     };
 
@@ -158,6 +184,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                 setIsServerRunning(true);
                 setAllowedGenerationTypes(status.allowedGenerationTypes || []);
                 setServiceHealth(status.serviceHealth || { ct: false, xray: false });
+                setReadOnlyMode(!!status.readOnly);
                 return;
               }
               if (!fallbackReachableUrl) {
@@ -171,6 +198,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
           setIsServerRunning(false);
           setAllowedGenerationTypes([]);
           setServiceHealth({ ct: false, xray: false });
+          setReadOnlyMode(false);
         };
 
         checkServerStatus();
@@ -430,9 +458,8 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
         const patientName = currentStudy?.PatientMainDicomTags?.PatientName || 'Generated^Patient';
         const patientID = currentStudy?.PatientMainDicomTags?.PatientID || 'GEN-001';
 
-        const firstTenLetters = promptData.replace(/[^a-zA-Z]/g, '').slice(0, 10);
         const formattedDate = _generateUniqueTimestamp();
-        let currentFileID = `${formattedDate}${firstTenLetters}`; // e.g. YYYYMMDDHHMMSSCardiomega
+        let currentFileID = `${formattedDate}_${_generateShortRandomId()}`; // e.g. YYYYMMDDHHMMSS_a1b2c3
 
         setFileID(currentFileID);
 
@@ -465,6 +492,8 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
         setModelIsRunning(false);
         setJobStatus('error');
         setJobQueuePosition(null);
+        const statusCode = error?.response?.status;
+        const isRateLimited = statusCode === 429;
         const apiError =
           error?.response?.data?.error ||
           error?.response?.data?.detail ||
@@ -477,6 +506,11 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
           content: () => {
             return (
               <div>
+                {isRateLimited ? (
+                  <div className="text-yellow-400 mt-2 p-2">
+                    Too many generation requests. Please wait about one minute before retrying.
+                  </div>
+                ) : null}
                 <div className="text-red-600 mt-2 p-2">Error: {apiError}</div>
               </div>
             );
@@ -645,7 +679,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
     const _uploadDicomToOrthanc = async (blob) => {
         try {
             // Orthanc /instances expects raw DICOM payload.
-            const orthancResponse = await axios.post('/pacs/instances', blob, {
+            const orthancResponse = await axios.post(_pacsUrl('/instances'), blob, {
             headers: {
                 'Content-Type': 'application/dicom',
                 Authorization: orthancAuth,
@@ -661,7 +695,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
     };
 
     const _enforceOrthancStudyRetention = async () => {
-      const response = await fetch('/pacs/studies?expand=1', {
+      const response = await fetch(_pacsUrl('/studies?expand=1'), {
         headers: {
           Authorization: orthancAuth,
         },
@@ -701,7 +735,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       const studiesToDelete = normalized.slice(0, toDeleteCount);
 
       for (const study of studiesToDelete) {
-        const deleteResponse = await fetch(`/pacs/studies/${study.id}`, {
+        const deleteResponse = await fetch(_pacsUrl(`/studies/${study.id}`), {
           method: 'DELETE',
           headers: {
             Authorization: orthancAuth,
@@ -720,7 +754,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       }
 
       try {
-        const response = await fetch(`/pacs/studies/${studyOrthancID}`, {
+        const response = await fetch(_pacsUrl(`/studies/${studyOrthancID}`), {
           headers: {
             Authorization: orthancAuth,
           },
@@ -821,7 +855,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
 
     const _getOrthancStudyByID = async (studyInstanceUID) => {
       try {
-          const response = await fetch('/pacs/tools/find', {
+          const response = await fetch(_pacsUrl('/tools/find'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -857,7 +891,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       };
     const _getOrthancSeriesByID = async (seriesInstanceUID) => {
       try {
-          const response = await fetch('/pacs/tools/find', {
+          const response = await fetch(_pacsUrl('/tools/find'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -907,7 +941,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
 
             const generatedSeriesOrthancID = generatedSeries.ID;
 
-            const url = `/pacs/series/${generatedSeriesOrthancID}/metadata/${type}`;
+            const url = _pacsUrl(`/series/${generatedSeriesOrthancID}/metadata/${type}`);
             const headers = {
                 'Content-Type': 'text/plain', // Ensure the server expects text/plain content type
                 Authorization: orthancAuth,
@@ -952,7 +986,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
         let anyWriteSucceeded = false;
         for (const key of keys) {
           try {
-            await axios.put(`/pacs/studies/${orthancStudyID}/metadata/${key}`, data || '', { headers });
+            await axios.put(_pacsUrl(`/studies/${orthancStudyID}/metadata/${key}`), data || '', { headers });
             anyWriteSucceeded = true;
           } catch (writeError) {
             console.warn(`Study metadata write failed for key ${key}:`, writeError);
@@ -973,7 +1007,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       }
 
       try {
-        const response = await fetch(`/pacs/series/${seriesOrthancID}`, {
+        const response = await fetch(_pacsUrl(`/series/${seriesOrthancID}`), {
           headers: {
             Authorization: orthancAuth,
           },
@@ -1005,7 +1039,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       !normalizedGenerationType ||
       allowedGenerationTypes.length === 0 ||
       allowedGenerationTypes.includes(normalizedGenerationType);
-    const generationReady = isServerRunning && selectedTypeAllowed;
+    const generationReady = isServerRunning && selectedTypeAllowed && !readOnlyMode;
 
 
     return (
@@ -1091,6 +1125,11 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                     {jobQueuePosition ? ` (queue position: ${jobQueuePosition})` : ''}
                   </div>
                 ) : null}
+                {readOnlyMode ? (
+                  <div className="mt-2 text-xs text-yellow-300">
+                    Read-only teaching mode enabled: generation is disabled.
+                  </div>
+                ) : null}
                 <div className="mt-3 flex justify-end">
                     <button
                         type="button"
@@ -1146,8 +1185,16 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
       const formattedDate = `${year}${month}${day}${hours}${minutes}${seconds}`;
       return formattedDate;
     }
+    function _generateShortRandomId() {
+      try {
+        const bytes = new Uint8Array(4);
+        window.crypto.getRandomValues(bytes);
+        return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('').slice(0, 6);
+      } catch (error) {
+        return Math.random().toString(16).slice(2, 8);
+      }
+    }
 }
 
 
 export default GenerativeAIComponent;
-

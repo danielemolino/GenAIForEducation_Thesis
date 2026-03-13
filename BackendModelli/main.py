@@ -9,12 +9,13 @@ from collections import deque
 from typing import List
 import json
 import base64
+import hashlib
 from urllib import request as urlrequest
 from urllib import error as urlerror
 
 import numpy as np
 import pydicom
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydicom.dataset import Dataset, FileDataset
@@ -52,6 +53,11 @@ REMOTE_TIMEOUT_SECONDS = float(os.getenv("REMOTE_TIMEOUT_SECONDS", "300"))
 ENABLE_LEXICAL_RETRIEVAL_FALLBACK = (
     os.getenv("ENABLE_LEXICAL_RETRIEVAL_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}
 )
+GENAI_READ_ONLY = os.getenv("GENAI_READ_ONLY", "0").strip().lower() in {"1", "true", "yes", "on"}
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "5"))
+GLOBAL_RATE_LIMIT_PER_MINUTE = int(os.getenv("GLOBAL_RATE_LIMIT_PER_MINUTE", "30"))
+ORTHANC_UPLOAD_RETRY_DELAYS_SECONDS = [1.0, 2.0, 4.0]
+AUDIT_LOG_PATH = Path(os.getenv("GENAI_AUDIT_LOG_PATH") or (Path(__file__).resolve().parent / "logs" / "genai_audit.log"))
 
 _process_is_running = False
 _progress_text = "Idle"
@@ -61,6 +67,9 @@ _queue_condition = threading.Condition()
 _job_queue: deque[dict] = deque()
 _active_file_id: str | None = None
 _queue_worker_started = False
+_rate_limit_lock = threading.Lock()
+_client_rate_hits: dict[str, deque[float]] = {}
+_global_rate_hits: deque[float] = deque()
 
 try:
     import nibabel as nib
@@ -151,12 +160,44 @@ def _queue_worker_loop() -> None:
         file_id = str(job["file_id"])
         payload = dict(job["payload"])
         series_instance_uid = str(job["series_instance_uid"])
+        meta = dict(job.get("meta") or {})
+        started_ts = time.time()
         _set_process_state(True)
         try:
+            _append_audit_log(
+                {
+                    "ts": datetime.now().isoformat(),
+                    "event": "job_started",
+                    "job_id": file_id,
+                    "generation_type": _normalize_generation_type(payload.get("generationType")),
+                    "session_hash": meta.get("session_hash"),
+                }
+            )
             _simulate_generation_job(file_id, payload, series_instance_uid)
         finally:
             _set_process_state(False)
             _clear_active_job()
+            summary_path = OUTPUT_ROOT / file_id / "summary.json"
+            status_value = "unknown"
+            error_value = ""
+            try:
+                if summary_path.exists():
+                    summary_data = json.loads(summary_path.read_text(encoding="utf-8"))
+                    status_value = str(summary_data.get("status") or "unknown")
+                    error_value = str(summary_data.get("error") or "")
+            except Exception:
+                pass
+            _append_audit_log(
+                {
+                    "ts": datetime.now().isoformat(),
+                    "event": "job_finished",
+                    "job_id": file_id,
+                    "status": status_value,
+                    "duration_seconds": round(time.time() - started_ts, 3),
+                    "session_hash": meta.get("session_hash"),
+                    "error": error_value[:300],
+                }
+            )
 
 
 def _ensure_queue_worker_started() -> None:
@@ -167,6 +208,52 @@ def _ensure_queue_worker_started() -> None:
         worker = threading.Thread(target=_queue_worker_loop, daemon=True, name="generation-queue-worker")
         worker.start()
         _queue_worker_started = True
+
+
+def _hash_text(value: str) -> str:
+    return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
+
+
+def _client_identity_from_request(request: Request) -> str:
+    cf_email = request.headers.get("CF-Access-Authenticated-User-Email", "").strip().lower()
+    if cf_email:
+        return f"email:{cf_email}"
+    xff = request.headers.get("X-Forwarded-For", "").strip()
+    if xff:
+        return f"ip:{xff.split(',')[0].strip()}"
+    if request.client and request.client.host:
+        return f"ip:{request.client.host}"
+    return "ip:unknown"
+
+
+def _check_rate_limit(client_key: str) -> tuple[bool, str | None]:
+    now_ts = time.time()
+    window_start = now_ts - 60.0
+    with _rate_limit_lock:
+        while _global_rate_hits and _global_rate_hits[0] < window_start:
+            _global_rate_hits.popleft()
+        client_hits = _client_rate_hits.setdefault(client_key, deque())
+        while client_hits and client_hits[0] < window_start:
+            client_hits.popleft()
+
+        if RATE_LIMIT_PER_MINUTE > 0 and len(client_hits) >= RATE_LIMIT_PER_MINUTE:
+            return False, f"rate limit exceeded for session ({RATE_LIMIT_PER_MINUTE}/min)"
+        if GLOBAL_RATE_LIMIT_PER_MINUTE > 0 and len(_global_rate_hits) >= GLOBAL_RATE_LIMIT_PER_MINUTE:
+            return False, f"global rate limit exceeded ({GLOBAL_RATE_LIMIT_PER_MINUTE}/min)"
+
+        client_hits.append(now_ts)
+        _global_rate_hits.append(now_ts)
+        return True, None
+
+
+def _append_audit_log(event: dict) -> None:
+    try:
+        AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with AUDIT_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=True) + "\n")
+    except Exception:
+        # Audit logging must never break runtime.
+        pass
 
 
 def _normalize_to_uint16(arr: np.ndarray) -> np.ndarray:
@@ -252,6 +339,41 @@ def _remote_services_status() -> dict:
         "ct": {"url": ct_url, "available": ct_ok, "reason": ct_reason},
         "xray": {"url": xray_url, "available": xray_ok, "reason": xray_reason},
     }
+
+
+def _remote_services_health_details() -> dict:
+    details: dict = {}
+    for generation_type in ("ct", "xray"):
+        remote_url = _service_url_for_generation_type(generation_type)
+        start_ts = time.time()
+        ok, reason = _check_remote_service(remote_url, generation_type)
+        details[generation_type] = {
+            "url": remote_url,
+            "available": ok,
+            "reason": reason,
+            "latencyMs": int((time.time() - start_ts) * 1000),
+        }
+    return details
+
+
+def _orthanc_health_details() -> dict:
+    start_ts = time.time()
+    try:
+        req = urlrequest.Request(
+            "http://localhost:8042/system",
+            method="GET",
+            headers={"Authorization": f"Basic {ORTHANC_BASIC_AUTH}"},
+        )
+        with urlrequest.urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return {
+                "available": True,
+                "latencyMs": int((time.time() - start_ts) * 1000),
+                "name": data.get("Name"),
+                "version": data.get("Version"),
+            }
+    except Exception as exc:
+        return {"available": False, "latencyMs": int((time.time() - start_ts) * 1000), "reason": str(exc)}
 
 
 def _tokenize_for_overlap(text: str) -> set[str]:
@@ -807,25 +929,35 @@ def _upload_folder_to_orthanc(folder: Path) -> List[dict]:
     upload_results: List[dict] = []
 
     for dcm_file in files:
-        try:
-            dicom_bytes = dcm_file.read_bytes()
-            req = urlrequest.Request(
-                ORTHANC_INSTANCES_URL,
-                data=dicom_bytes,
-                method="POST",
-                headers={
-                    "Content-Type": "application/dicom",
-                    "Authorization": f"Basic {ORTHANC_BASIC_AUTH}",
-                },
-            )
-            with urlrequest.urlopen(req, timeout=30) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-                upload_results.append(payload)
-        except urlerror.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"Orthanc upload failed for {dcm_file.name}: {exc.code} {detail}") from exc
-        except Exception as exc:
-            raise RuntimeError(f"Orthanc upload failed for {dcm_file.name}: {exc}") from exc
+        last_error: Exception | None = None
+        for attempt, delay in enumerate([0.0] + ORTHANC_UPLOAD_RETRY_DELAYS_SECONDS, start=1):
+            if delay > 0:
+                time.sleep(delay)
+            try:
+                dicom_bytes = dcm_file.read_bytes()
+                req = urlrequest.Request(
+                    ORTHANC_INSTANCES_URL,
+                    data=dicom_bytes,
+                    method="POST",
+                    headers={
+                        "Content-Type": "application/dicom",
+                        "Authorization": f"Basic {ORTHANC_BASIC_AUTH}",
+                    },
+                )
+                with urlrequest.urlopen(req, timeout=30) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    upload_results.append(payload)
+                    last_error = None
+                    break
+            except urlerror.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="ignore")
+                last_error = RuntimeError(
+                    f"Orthanc upload failed for {dcm_file.name} (attempt {attempt}): {exc.code} {detail}"
+                )
+            except Exception as exc:
+                last_error = RuntimeError(f"Orthanc upload failed for {dcm_file.name} (attempt {attempt}): {exc}")
+        if last_error is not None:
+            raise last_error
 
     return upload_results
 
@@ -920,12 +1052,22 @@ def _upload_single_dicom_to_orthanc(dcm_file: Path) -> dict:
 def health():
     mode_ok = BACKEND_MODE in VALID_BACKEND_MODES
     services = _remote_services_status() if GENERATION_ENGINE == "real" else None
+    queue = _queue_state()
     return {
         "status": "ok" if mode_ok else "misconfigured",
         "backendMode": BACKEND_MODE,
         "generationEngine": GENERATION_ENGINE,
+        "readOnly": GENAI_READ_ONLY,
         "validModes": sorted(VALID_BACKEND_MODES),
+        "rateLimits": {
+            "perSessionPerMinute": RATE_LIMIT_PER_MINUTE,
+            "globalPerMinute": GLOBAL_RATE_LIMIT_PER_MINUTE,
+        },
+        "auditLogPath": str(AUDIT_LOG_PATH),
         "services": services,
+        "servicesDetailed": _remote_services_health_details() if GENERATION_ENGINE == "real" else None,
+        "orthanc": _orthanc_health_details(),
+        "queue": queue,
     }
 
 
@@ -943,6 +1085,7 @@ def mode():
     return {
         "backendMode": BACKEND_MODE,
         "generationEngine": GENERATION_ENGINE,
+        "readOnly": GENAI_READ_ONLY,
         "validModes": sorted(VALID_BACKEND_MODES),
         "allowedGenerationTypes": sorted(allowed_generation_types),
         "services": services,
@@ -955,7 +1098,7 @@ def services_status():
         "ct": {"url": "", "available": True, "reason": "asset-mode"},
         "xray": {"url": "", "available": True, "reason": "asset-mode"},
     }
-    return {"generationEngine": GENERATION_ENGINE, "services": services}
+    return {"generationEngine": GENERATION_ENGINE, "readOnly": GENAI_READ_ONLY, "services": services}
 
 
 @app.get("/status")
@@ -1007,10 +1150,15 @@ def ensure_empty_generative_study():
 
 
 @app.post("/files/{file_id}")
-def start_generation(file_id: str, payload: dict):
+def start_generation(file_id: str, payload: dict, request: Request):
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
         return JSONResponse(status_code=400, content={"error": "Prompt is required"})
+    if GENAI_READ_ONLY:
+        return JSONResponse(
+            status_code=403,
+            content={"error": "Generation disabled: server is in read-only teaching mode"},
+        )
 
     if BACKEND_MODE not in VALID_BACKEND_MODES:
         return JSONResponse(
@@ -1055,13 +1203,35 @@ def start_generation(file_id: str, payload: dict):
             },
         )
 
+    client_key = _client_identity_from_request(request)
+    rate_ok, rate_reason = _check_rate_limit(client_key)
+    if not rate_ok:
+        return JSONResponse(status_code=429, content={"error": rate_reason})
+
     series_instance_uid = generate_uid()
+    session_hash = _hash_text(client_key)[:16]
+    prompt_hash = _hash_text(prompt)[:16]
     _ensure_queue_worker_started()
     queue_position = _enqueue_job(
         {
             "file_id": file_id,
             "payload": payload,
             "series_instance_uid": series_instance_uid,
+            "meta": {
+                "session_hash": session_hash,
+                "prompt_hash": prompt_hash,
+            },
+        }
+    )
+    _append_audit_log(
+        {
+            "ts": datetime.now().isoformat(),
+            "event": "job_queued",
+            "job_id": file_id,
+            "generation_type": generation_type,
+            "queue_position": queue_position,
+            "session_hash": session_hash,
+            "prompt_hash": prompt_hash,
         }
     )
     queued_summary = {
@@ -1072,6 +1242,8 @@ def start_generation(file_id: str, payload: dict):
         "queuePosition": queue_position,
         "createdAt": datetime.now().isoformat(),
         "seriesInstanceUID": series_instance_uid,
+        "sessionHash": session_hash,
+        "promptHash": prompt_hash,
     }
     _write_summary(file_id, queued_summary)
 
