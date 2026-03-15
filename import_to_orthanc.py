@@ -22,6 +22,7 @@ import argparse
 import array
 import csv
 import json
+import time
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -194,6 +195,29 @@ def _put_study_metadata(orthanc_url: str, orthanc_study_id: str, key: str, value
     )
 
 
+def _resolve_study_id_from_uid(metadata_url: str, study_instance_uid: str, retries: int = 5) -> Optional[str]:
+    query = json.dumps(
+        {
+            "Level": "Study",
+            "Expand": True,
+            "Query": {"StudyInstanceUID": study_instance_uid},
+        }
+    ).encode("utf-8")
+
+    for attempt in range(retries):
+        response = _json_request(
+            f"{metadata_url.rstrip('/')}/tools/find",
+            method="POST",
+            data=query,
+            headers={"Content-Type": "application/json"},
+        )
+        study_id = response[0]["ID"] if response else None
+        if study_id:
+            return study_id
+        time.sleep(0.4 * (attempt + 1))
+    return None
+
+
 def _clear_orthanc(orthanc_url: str) -> int:
     studies = _json_request(f"{orthanc_url.rstrip('/')}/studies")
     deleted = 0
@@ -282,14 +306,20 @@ def main() -> int:
                 continue
 
             dicom_path = _build_dicom_from_jpg(row, image_path, work_dir)
-            upload_result = _upload_dicom(args.orthanc_url, dicom_path)
-            orthanc_study_id = upload_result["ParentStudy"]
+            _upload_dicom(args.orthanc_url, dicom_path)
+            # Resolve through /tools/find using the DICOM StudyInstanceUID, not the upload ParentStudy ID.
+            import pydicom
+
+            ds = pydicom.dcmread(str(dicom_path), stop_before_pixels=True)
+            orthanc_study_id = _resolve_study_id_from_uid(args.metadata_url, str(ds.StudyInstanceUID))
 
             if not args.skip_metadata:
+                if not orthanc_study_id:
+                    raise RuntimeError("Unable to resolve Orthanc study ID from StudyInstanceUID after upload")
                 try:
-                    _put_study_metadata(args.metadata_url, orthanc_study_id, "Report", report)
+                    _put_study_metadata(args.metadata_url, orthanc_study_id, "Impressions", report)
+                    _put_study_metadata(args.metadata_url, orthanc_study_id, "1025", report)
                     _put_study_metadata(args.metadata_url, orthanc_study_id, "Group", group)
-                    _put_study_metadata(args.metadata_url, orthanc_study_id, "StudyName", study_name)
                 except Exception as exc:
                     print(
                         f"WARNING {study_name}: Orthanc metadata write failed, "

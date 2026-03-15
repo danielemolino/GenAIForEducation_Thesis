@@ -19,6 +19,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
     Prompt: ['Prompt', '1026'],
     Findings: ['Findings', '1024'],
     Impressions: ['Impressions', '1025'],
+    Group: ['Group', '1027'],
   };
   const LOCAL_GROUPS_STORAGE_KEY = 'studyGroupByUID';
   const GENERATIVE_AI_PLACEHOLDER_STUDY_UID =
@@ -322,7 +323,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
   };
 
   const getMetadataOfStudy = async (studyID, type) => {
-    if (!studyID || !['Prompt', 'Findings', 'Impressions'].includes(type)) {
+    if (!studyID || !['Prompt', 'Findings', 'Impressions', 'Group'].includes(type)) {
       return '';
     }
 
@@ -373,7 +374,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
   };
 
   const addMetadataToStudy = async (studyID, data, type) => {
-    if (!studyID || !['Findings', 'Impressions'].includes(type)) {
+    if (!studyID || !['Findings', 'Impressions', 'Group'].includes(type)) {
       return { ok: false, status: 0 };
     }
 
@@ -448,11 +449,12 @@ function TextArea({ servicesManager, showPrompt = true }) {
         return;
       }
 
-      const [studyPrompt, seriesPrompt, findings, impressions] = await Promise.all([
+      const [studyPrompt, seriesPrompt, findings, impressions, group] = await Promise.all([
         getMetadataOfStudy(studyID, 'Prompt'),
         getMetadataOfSeries(seriesID, 'SeriesPrompt'),
         getMetadataOfStudy(studyID, 'Findings'),
         getMetadataOfStudy(studyID, 'Impressions'),
+        getMetadataOfStudy(studyID, 'Group'),
       ]);
 
       // Ignore stale async completion from older viewport/study selections.
@@ -463,7 +465,8 @@ function TextArea({ servicesManager, showPrompt = true }) {
       setReportPromptData(studyPrompt || seriesPrompt || '');
       setReportFindingsData(findings || '');
       setReportImpressionsData(impressions || '');
-      setReportGroupData(getLocalStudyGroup(studyInstanceUID));
+      const normalizedGroup = group === 'A' || group === 'B' ? group : getLocalStudyGroup(studyInstanceUID);
+      setReportGroupData(normalizedGroup);
       setStatus('');
     } catch (error) {
       setStatus('Metadata panel error (viewer rendering continues).');
@@ -516,18 +519,20 @@ function TextArea({ servicesManager, showPrompt = true }) {
     setStatus('');
 
     try {
-      const [f, i] = await Promise.all([
+      const [f, i, g] = await Promise.all([
         addMetadataToStudy(targetStudyID, reportFindingsData, 'Findings'),
         addMetadataToStudy(targetStudyID, reportImpressionsData, 'Impressions'),
+        addMetadataToStudy(targetStudyID, reportGroupData === 'A' || reportGroupData === 'B' ? reportGroupData : '', 'Group'),
       ]);
       setLocalStudyGroup(targetStudyUID, reportGroupData);
 
-      if (f.ok && i.ok) {
+      if (f.ok && i.ok && g.ok) {
         setStatus('Report saved successfully.');
       } else {
         const failed = [
           !f.ok ? `Findings(${f.status})` : null,
           !i.ok ? `Impressions(${i.status})` : null,
+          !g.ok ? `Group(${g.status})` : null,
         ]
           .filter(Boolean)
           .join(', ');
