@@ -10,6 +10,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
   const [reportFindingsData, setReportFindingsData] = useState('');
   const [reportImpressionsData, setReportImpressionsData] = useState('');
   const [reportGroupData, setReportGroupData] = useState('None');
+  const [importedGroupMap, setImportedGroupMap] = useState({});
   const [isSaving, setIsSaving] = useState(false);
   const [status, setStatus] = useState('');
   const loadRequestRef = useRef(0);
@@ -562,6 +563,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
       setReportPromptData(studyPrompt || seriesPrompt || '');
       setReportFindingsData(findings || '');
       setReportImpressionsData(impressions || '');
+      const importedGroup = importedGroupMap?.[studyInstanceUID];
       const normalizedGroup =
         group === 'A' || group === 'B'
           ? group
@@ -571,6 +573,8 @@ function TextArea({ servicesManager, showPrompt = true }) {
             ? groupFromDicom
             : groupFromStudyDicom === 'A' || groupFromStudyDicom === 'B'
               ? groupFromStudyDicom
+            : importedGroup === 'A' || importedGroup === 'B'
+              ? importedGroup
             : getLocalStudyGroup(studyInstanceUID);
       setReportGroupData(normalizedGroup);
       setStatus('');
@@ -578,6 +582,31 @@ function TextArea({ servicesManager, showPrompt = true }) {
       setStatus('Metadata panel error (viewer rendering continues).');
     }
   }, [displaySetService, viewportGridService]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadGeneratedGroupMap = async () => {
+      try {
+        const response = await fetch('/study_groups.generated.json', { cache: 'no-store' });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        if (!cancelled && data && typeof data === 'object') {
+          setImportedGroupMap(data);
+        }
+      } catch (error) {
+        // Ignore missing generated map.
+      }
+    };
+
+    loadGeneratedGroupMap();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     loadReportForActiveStudy();
@@ -595,7 +624,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
       displaySetSub.unsubscribe();
       viewportSub.unsubscribe();
     };
-  }, [displaySetService, viewportGridService, loadReportForActiveStudy]);
+  }, [displaySetService, viewportGridService, loadReportForActiveStudy, importedGroupMap]);
 
   const saveReport = async () => {
     const isGenerativeRoute = window.location.pathname.includes('/generative-ai/');
