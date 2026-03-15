@@ -5,6 +5,23 @@ import WrappedPreviewStudyBrowser from './components/WrappedPreviewStudyBrowser'
 import ServerStatus from './components/ServerStatus'
 import axios from 'axios';
 
+const PROMPT_EXAMPLES = {
+  ct: [
+    'Findings: Mild bilateral pleural effusions with dependent bibasal atelectatic changes. No focal consolidation. Impression: Small pleural effusions with bibasal atelectasis.',
+    'Findings: Right lower lobe consolidation with surrounding ground-glass opacity. No pleural effusion. Impression: Right lower lobe pneumonia.',
+    'Findings: Mild cardiomegaly. Interlobular septal thickening and diffuse bilateral ground-glass opacities. Impression: Pulmonary edema in a congestive heart failure pattern.',
+    'Findings: Large left pneumothorax with partial collapse of the left lung. Mild rightward mediastinal shift. Impression: Tension pneumothorax on the left.',
+    'Findings: Multiple bilateral peripheral ground-glass opacities, more evident in the lower lobes. Impression: Multifocal atypical inflammatory process.',
+  ],
+  xray: [
+    'Findings: Cardiomediastinal silhouette is within normal limits. No focal airspace consolidation, pleural effusion, or pneumothorax. Impression: No acute cardiopulmonary abnormality.',
+    'Findings: Patchy left basilar opacity with blunting of the left costophrenic angle. Impression: Left basilar infiltrate with small pleural effusion.',
+    'Findings: Mild enlargement of the cardiac silhouette with diffuse bilateral perihilar opacities. Impression: Mild cardiogenic pulmonary edema.',
+    'Findings: Hyperinflated lungs with flattening of the diaphragms. No focal consolidation. Impression: Chronic hyperinflation compatible with COPD.',
+    'Findings: Rounded right upper lobe opacity measuring approximately 2 cm. No pleural effusion. Impression: Solitary right upper lobe pulmonary nodule requiring further evaluation.',
+  ],
+};
+
 function GenerativeAIComponent({ commandsManager, extensionManager, servicesManager }) {
     const { t } = useTranslation('Common');
     const {displaySetService, uiModalService, viewportGridService} = servicesManager.services;
@@ -1035,6 +1052,7 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
 
     };
     const normalizedGenerationType = generationType === 'xrays' ? 'xray' : generationType;
+    const promptExamples = normalizedGenerationType ? PROMPT_EXAMPLES[normalizedGenerationType] || [] : [];
     const selectedTypeAllowed =
       !normalizedGenerationType ||
       allowedGenerationTypes.length === 0 ||
@@ -1067,6 +1085,27 @@ function GenerativeAIComponent({ commandsManager, extensionManager, servicesMana
                     disabled= {modelIsRunning ||   dataIsUploading}
                 >
                 </textarea>
+
+                {promptExamples.length > 0 ? (
+                  <div className="mt-3">
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-300">
+                      Example reports
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      {promptExamples.map((examplePrompt, index) => (
+                        <button
+                          key={`${normalizedGenerationType}-example-${index}`}
+                          type="button"
+                          onClick={() => setPromptData(examplePrompt)}
+                          disabled={modelIsRunning || dataIsUploading}
+                          className="rounded border border-inputfield-main bg-black px-3 py-2 text-left text-xs leading-relaxed text-gray-200 transition hover:border-primary-main hover:text-white disabled:cursor-default disabled:opacity-60"
+                        >
+                          {examplePrompt}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="flex justify-center p-2 pb-8 bg-primary-dark">
                     <div className="mr-3">

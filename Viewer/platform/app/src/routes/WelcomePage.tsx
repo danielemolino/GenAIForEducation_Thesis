@@ -77,7 +77,7 @@ export default function WelcomePage() {
       </div>
       <div className="mx-auto flex min-h-screen w-full max-w-5xl flex-col items-center justify-center px-6 py-10">
         <h1 className="text-primary-light mb-4 text-center text-5xl font-semibold tracking-tight">
-          GenEdu - Generative Medical Imaging for Education
+          GenAIForEducation - Generative Medical Imaging for Education
         </h1>
         <p className="mb-8 max-w-4xl text-center text-2xl leading-relaxed text-gray-200">
           Educational platform to explore radiology cases and simulate medical image generation from
