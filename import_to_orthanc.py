@@ -164,6 +164,11 @@ def _build_dicom_from_jpg(row: Dict[str, str], image_path: Path, output_dir: Pat
     ds.ViewPosition = row.get("ViewPosition") or ""
     ds.ImageType = ["ORIGINAL", "PRIMARY"]
     ds.StudyComments = row.get("report") or ""
+    ds.ImageComments = f"Group={row.get('group') or ''}"
+    ds.add_new((0x0011, 0x0010), "LO", "GenAIForEducation")
+    ds.add_new((0x0011, 0x1001), "LT", row.get("report") or "")
+    ds.add_new((0x0011, 0x1002), "LO", row.get("group") or "")
+    ds.add_new((0x0011, 0x1003), "LO", row.get("study_id") or "")
     ds.PixelData = pixel_buffer.tobytes()
     ds.save_as(str(out_path), write_like_original=False)
     return out_path
@@ -262,6 +267,7 @@ def main() -> int:
             break
 
         try:
+            row["group"] = group
             image_path = _resolve_local_image(csv_path, row)
             study_name = row["study_id"]
             report = row.get("report") or ""
@@ -280,9 +286,16 @@ def main() -> int:
             orthanc_study_id = upload_result["ParentStudy"]
 
             if not args.skip_metadata:
-                _put_study_metadata(args.metadata_url, orthanc_study_id, "Report", report)
-                _put_study_metadata(args.metadata_url, orthanc_study_id, "Group", group)
-                _put_study_metadata(args.metadata_url, orthanc_study_id, "StudyName", study_name)
+                try:
+                    _put_study_metadata(args.metadata_url, orthanc_study_id, "Report", report)
+                    _put_study_metadata(args.metadata_url, orthanc_study_id, "Group", group)
+                    _put_study_metadata(args.metadata_url, orthanc_study_id, "StudyName", study_name)
+                except Exception as exc:
+                    print(
+                        f"WARNING {study_name}: Orthanc metadata write failed, "
+                        f"but DICOM import succeeded: {exc}",
+                        file=sys.stderr,
+                    )
 
             print(f"Imported study={study_name} group={group} image={image_path.name}")
             imported += 1
