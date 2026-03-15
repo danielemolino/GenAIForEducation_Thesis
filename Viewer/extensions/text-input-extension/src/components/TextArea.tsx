@@ -334,6 +334,34 @@ function TextArea({ servicesManager, showPrompt = true }) {
     }
   };
 
+  const getGroupFromStudyDicom = async studyID => {
+    if (!studyID) {
+      return '';
+    }
+
+    try {
+      const studyResponse = await orthancFetch({
+        path: `/studies/${studyID}`,
+        method: 'GET',
+        contentType: 'application/json',
+      });
+
+      if (!studyResponse?.ok) {
+        return '';
+      }
+
+      const studyInfo = await studyResponse.json();
+      const firstSeriesId = studyInfo?.Series?.[0];
+      if (!firstSeriesId) {
+        return '';
+      }
+
+      return await getGroupFromSeriesDicom(firstSeriesId);
+    } catch (error) {
+      return '';
+    }
+  };
+
   const resolveInternalStudyId = async studyInstanceUID => {
     const id = await getOrthancStudyID(studyInstanceUID);
     if (!id) {
@@ -488,13 +516,14 @@ function TextArea({ servicesManager, showPrompt = true }) {
         return;
       }
 
-      const [studyPrompt, seriesPrompt, findings, impressions, group, groupFromDicom] = await Promise.all([
+      const [studyPrompt, seriesPrompt, findings, impressions, group, groupFromDicom, groupFromStudyDicom] = await Promise.all([
         getMetadataOfStudy(studyID, 'Prompt'),
         getMetadataOfSeries(seriesID, 'SeriesPrompt'),
         getMetadataOfStudy(studyID, 'Findings'),
         getMetadataOfStudy(studyID, 'Impressions'),
         getMetadataOfStudy(studyID, 'Group'),
         getGroupFromSeriesDicom(seriesID),
+        getGroupFromStudyDicom(studyID),
       ]);
 
       // Ignore stale async completion from older viewport/study selections.
@@ -510,6 +539,8 @@ function TextArea({ servicesManager, showPrompt = true }) {
           ? group
           : groupFromDicom === 'A' || groupFromDicom === 'B'
             ? groupFromDicom
+            : groupFromStudyDicom === 'A' || groupFromStudyDicom === 'B'
+              ? groupFromStudyDicom
             : getLocalStudyGroup(studyInstanceUID);
       setReportGroupData(normalizedGroup);
       setStatus('');
