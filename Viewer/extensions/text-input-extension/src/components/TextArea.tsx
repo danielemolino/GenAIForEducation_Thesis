@@ -112,6 +112,32 @@ function TextArea({ servicesManager, showPrompt = true }) {
     const activeDisplaySets = displaySetService.getActiveDisplaySets();
     return activeDisplaySets?.[0];
   };
+
+  const getGroupFromDisplaySet = activeDisplaySet => {
+    const firstImage = activeDisplaySet?.images?.[0];
+    const rawCandidates = [
+      firstImage?.ImageComments,
+      firstImage?.imageComments,
+      firstImage?.['00204000'],
+      firstImage?.['x00204000'],
+      activeDisplaySet?.instance?.ImageComments,
+      activeDisplaySet?.instance?.imageComments,
+      activeDisplaySet?.instance?.['00204000'],
+      activeDisplaySet?.instance?.['x00204000'],
+    ];
+
+    for (const raw of rawCandidates) {
+      if (typeof raw !== 'string') {
+        continue;
+      }
+      const match = /^Group=(A|B)$/i.exec(raw.trim());
+      if (match) {
+        return match[1].toUpperCase();
+      }
+    }
+
+    return '';
+  };
   const getStudyUIDFromUrl = () => {
     try {
       const currentUrl = new URL(window.location.href);
@@ -516,6 +542,8 @@ function TextArea({ servicesManager, showPrompt = true }) {
         return;
       }
 
+      const groupFromDisplaySet = getGroupFromDisplaySet(activeDisplaySet);
+
       const [studyPrompt, seriesPrompt, findings, impressions, group, groupFromDicom, groupFromStudyDicom] = await Promise.all([
         getMetadataOfStudy(studyID, 'Prompt'),
         getMetadataOfSeries(seriesID, 'SeriesPrompt'),
@@ -537,6 +565,8 @@ function TextArea({ servicesManager, showPrompt = true }) {
       const normalizedGroup =
         group === 'A' || group === 'B'
           ? group
+          : groupFromDisplaySet === 'A' || groupFromDisplaySet === 'B'
+            ? groupFromDisplaySet
           : groupFromDicom === 'A' || groupFromDicom === 'B'
             ? groupFromDicom
             : groupFromStudyDicom === 'A' || groupFromStudyDicom === 'B'
