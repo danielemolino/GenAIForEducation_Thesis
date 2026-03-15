@@ -36,8 +36,12 @@ def _http_request(
     headers: Optional[Dict[str, str]] = None,
 ) -> bytes:
     req = request.Request(url, data=data, headers=headers or {}, method=method)
-    with request.urlopen(req) as resp:
-        return resp.read()
+    try:
+        with request.urlopen(req) as resp:
+            return resp.read()
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"{method} {url} -> HTTP {exc.code}: {detail}") from exc
 
 
 def _json_request(
@@ -232,6 +236,11 @@ def main() -> int:
     parser.add_argument("--clear-db", action="store_true", help="Delete all existing Orthanc studies before import.")
     parser.add_argument("--limit", type=int, default=0, help="Import at most N rows (0 = no limit).")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--skip-metadata",
+        action="store_true",
+        help="Upload DICOMs without writing Orthanc study metadata.",
+    )
     args = parser.parse_args()
 
     if not args.input_root.exists():
@@ -270,9 +279,10 @@ def main() -> int:
             upload_result = _upload_dicom(args.orthanc_url, dicom_path)
             orthanc_study_id = upload_result["ParentStudy"]
 
-            _put_study_metadata(args.metadata_url, orthanc_study_id, "Report", report)
-            _put_study_metadata(args.metadata_url, orthanc_study_id, "Group", group)
-            _put_study_metadata(args.metadata_url, orthanc_study_id, "StudyName", study_name)
+            if not args.skip_metadata:
+                _put_study_metadata(args.metadata_url, orthanc_study_id, "Report", report)
+                _put_study_metadata(args.metadata_url, orthanc_study_id, "Group", group)
+                _put_study_metadata(args.metadata_url, orthanc_study_id, "StudyName", study_name)
 
             print(f"Imported study={study_name} group={group} image={image_path.name}")
             imported += 1
