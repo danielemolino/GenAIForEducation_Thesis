@@ -92,6 +92,7 @@ function WorkList({
     ...sessionQueryFilterValues,
   });
   const [, setGroupHydrationVersion] = useState(0);
+  const [importedGroupMap, setImportedGroupMap] = useState({});
 
   const debouncedFilterValues = useDebounce(filterValues, 200);
   const { resultsPerPage, pageNumber, sortBy, sortDirection } = filterValues;
@@ -106,7 +107,9 @@ function WorkList({
   );
   const groupFilteredStudies =
     filterValues.group?.length > 0
-      ? visibleStudies.filter(study => filterValues.group.includes(getLocalStudyGroup(study)))
+      ? visibleStudies.filter(study =>
+          filterValues.group.includes(getStudyGroup(study, importedGroupMap))
+        )
       : visibleStudies;
   const visibleStudiesTotal = Math.min(groupFilteredStudies.length, studiesTotal);
   const canSort = visibleStudiesTotal < STUDIES_LIMIT;
@@ -201,6 +204,9 @@ function WorkList({
         const remoteMap = await response.json();
         if (!remoteMap || typeof remoteMap !== 'object') {
           return;
+        }
+        if (!cancelled) {
+          setImportedGroupMap(remoteMap);
         }
 
         const raw = localStorage.getItem(LOCAL_GROUPS_STORAGE_KEY);
@@ -347,7 +353,9 @@ function WorkList({
     };
 
     const hydrateGroups = async () => {
-      const pendingStudies = visibleStudies.filter(study => getLocalStudyGroup(study) === 'None');
+      const pendingStudies = visibleStudies.filter(
+        study => getStudyGroup(study, importedGroupMap) === 'None'
+      );
       if (!pendingStudies.length) {
         return;
       }
@@ -377,7 +385,7 @@ function WorkList({
     return () => {
       cancelled = true;
     };
-  }, [visibleStudies]);
+  }, [visibleStudies, importedGroupMap]);
 
   // Sync URL query parameters with filters
   useEffect(() => {
@@ -473,7 +481,7 @@ function WorkList({
       date,
       time,
     } = study;
-    const group = getLocalStudyGroup(study);
+    const group = getStudyGroup(study, importedGroupMap);
     const studyDate =
       date &&
       moment(date, ['YYYYMMDD', 'YYYY.MM.DD'], true).isValid() &&
@@ -1028,6 +1036,21 @@ function getLocalStudyGroup(study) {
   } catch (error) {
     return 'None';
   }
+}
+
+function getStudyGroup(study, importedGroupMap = {}) {
+  const studyInstanceUid = study?.studyInstanceUid;
+  if (!studyInstanceUid) {
+    return 'None';
+  }
+
+  const localGroup = getLocalStudyGroup(study);
+  if (localGroup === 'A' || localGroup === 'B') {
+    return localGroup;
+  }
+
+  const importedGroup = importedGroupMap?.[studyInstanceUid];
+  return importedGroup === 'A' || importedGroup === 'B' ? importedGroup : 'None';
 }
 
 export default WorkList;
