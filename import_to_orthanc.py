@@ -319,7 +319,10 @@ def main() -> int:
                 try:
                     _put_study_metadata(args.metadata_url, orthanc_study_id, "Impressions", report)
                     _put_study_metadata(args.metadata_url, orthanc_study_id, "1025", report)
-                    _put_study_metadata(args.metadata_url, orthanc_study_id, "Group", group)
+                    try:
+                        _put_study_metadata(args.metadata_url, orthanc_study_id, "Group", group)
+                    except Exception:
+                        _put_study_metadata(args.metadata_url, orthanc_study_id, "1027", group)
                 except Exception as exc:
                     print(
                         f"WARNING {study_name}: Orthanc metadata write failed, "
