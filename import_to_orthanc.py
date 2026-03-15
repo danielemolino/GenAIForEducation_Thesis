@@ -125,10 +125,9 @@ def _build_dicom_from_jpg(row: Dict[str, str], image_path: Path, output_dir: Pat
 
     image = Image.open(image_path).convert("L")
     pixels_8bit = list(image.getdata())
-    max_pixel = max(pixels_8bit) if pixels_8bit else 0
-    scale = 4095.0 / max(1.0, float(max_pixel))
-    pixels_12bit = [int(round(value * scale)) for value in pixels_8bit]
-    pixel_buffer = array.array("H", pixels_12bit)
+    # Preserve the JPEG appearance as much as possible instead of stretching the
+    # full range aggressively; these files are already display-ready images.
+    pixel_buffer = array.array("H", pixels_8bit)
 
     study_uid = generate_uid()
     series_uid = generate_uid()
@@ -154,11 +153,11 @@ def _build_dicom_from_jpg(row: Dict[str, str], image_path: Path, output_dir: Pat
     ds.Rows = int(image.height)
     ds.Columns = int(image.width)
     ds.BitsAllocated = 16
-    ds.BitsStored = 12
-    ds.HighBit = 11
+    ds.BitsStored = 8
+    ds.HighBit = 7
     ds.PixelRepresentation = 0
-    ds.WindowWidth = 2000
-    ds.WindowCenter = 1000
+    ds.WindowWidth = 255
+    ds.WindowCenter = 127
     ds.InstanceNumber = 1
     ds.SeriesNumber = 1
     ds.BodyPartExamined = "CHEST"
