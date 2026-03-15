@@ -1,4 +1,4 @@
-# GenAIforEdu
+# GenAIforEdud
 
 Progetto per generazione di immagini medicali da testo e visualizzazione DICOM in OHIF.
 
