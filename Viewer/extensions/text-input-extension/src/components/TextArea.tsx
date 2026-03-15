@@ -581,7 +581,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
     } catch (error) {
       setStatus('Metadata panel error (viewer rendering continues).');
     }
-  }, [displaySetService, viewportGridService]);
+  }, [displaySetService, viewportGridService, importedGroupMap]);
 
   useEffect(() => {
     let cancelled = false;
