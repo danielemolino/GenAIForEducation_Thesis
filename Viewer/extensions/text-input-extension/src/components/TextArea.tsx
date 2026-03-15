@@ -560,10 +560,11 @@ function TextArea({ servicesManager, showPrompt = true }) {
         return;
       }
 
-      setReportPromptData(studyPrompt || seriesPrompt || '');
+      const importedGroup = importedGroupMap?.[studyInstanceUID];
+      const isImportedSample = importedGroup === 'A' || importedGroup === 'B';
+      setReportPromptData(isImportedSample ? '' : studyPrompt || seriesPrompt || '');
       setReportFindingsData(findings || '');
       setReportImpressionsData(impressions || '');
-      const importedGroup = importedGroupMap?.[studyInstanceUID];
       const normalizedGroup =
         group === 'A' || group === 'B'
           ? group
