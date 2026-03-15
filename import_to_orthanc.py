@@ -164,12 +164,19 @@ def _build_dicom_from_jpg(row: Dict[str, str], image_path: Path, output_dir: Pat
     ds.BodyPartExamined = "CHEST"
     ds.ViewPosition = row.get("ViewPosition") or ""
     ds.ImageType = ["ORIGINAL", "PRIMARY"]
-    ds.StudyComments = row.get("report") or ""
+    report = (row.get("report") or "").strip()
+    impression = (row.get("impression") or "").strip()
+    same_text = report.casefold() == impression.casefold() if report and impression else False
+    findings_value = "" if same_text else report
+    impressions_value = impression or report
+
+    ds.StudyComments = findings_value
     ds.ImageComments = f"Group={row.get('group') or ''}"
     ds.add_new((0x0011, 0x0010), "LO", "GenAIForEducation")
-    ds.add_new((0x0011, 0x1001), "LT", row.get("report") or "")
+    ds.add_new((0x0011, 0x1001), "LT", findings_value)
     ds.add_new((0x0011, 0x1002), "LO", row.get("group") or "")
     ds.add_new((0x0011, 0x1003), "LO", row.get("study_id") or "")
+    ds.add_new((0x0011, 0x1004), "LT", impressions_value)
     ds.PixelData = pixel_buffer.tobytes()
     ds.save_as(str(out_path), write_like_original=False)
     return out_path
@@ -295,6 +302,10 @@ def main() -> int:
             image_path = _resolve_local_image(csv_path, row)
             study_name = row["study_id"]
             report = row.get("report") or ""
+            impression = row.get("impression") or ""
+            same_text = report.strip().casefold() == impression.strip().casefold() if report and impression else False
+            findings_value = "" if same_text else report
+            impressions_value = impression or report
             work_dir = args.work_dir / csv_path.parent.parent.name / group / study_name
 
             if args.dry_run:
@@ -317,8 +328,11 @@ def main() -> int:
                 if not orthanc_study_id:
                     raise RuntimeError("Unable to resolve Orthanc study ID from StudyInstanceUID after upload")
                 try:
-                    _put_study_metadata(args.metadata_url, orthanc_study_id, "Impressions", report)
-                    _put_study_metadata(args.metadata_url, orthanc_study_id, "1025", report)
+                    if findings_value.strip():
+                        _put_study_metadata(args.metadata_url, orthanc_study_id, "Findings", findings_value)
+                        _put_study_metadata(args.metadata_url, orthanc_study_id, "1024", findings_value)
+                    _put_study_metadata(args.metadata_url, orthanc_study_id, "Impressions", impressions_value)
+                    _put_study_metadata(args.metadata_url, orthanc_study_id, "1025", impressions_value)
                     try:
                         _put_study_metadata(args.metadata_url, orthanc_study_id, "Group", group)
                     except Exception:

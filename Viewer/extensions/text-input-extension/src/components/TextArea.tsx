@@ -295,6 +295,45 @@ function TextArea({ servicesManager, showPrompt = true }) {
     }
   };
 
+  const getGroupFromSeriesDicom = async seriesID => {
+    if (!seriesID) {
+      return '';
+    }
+
+    try {
+      const seriesResponse = await orthancFetch({
+        path: `/series/${seriesID}`,
+        method: 'GET',
+        contentType: 'application/json',
+      });
+
+      if (!seriesResponse?.ok) {
+        return '';
+      }
+
+      const seriesInfo = await seriesResponse.json();
+      const firstInstanceId = seriesInfo?.Instances?.[0];
+      if (!firstInstanceId) {
+        return '';
+      }
+
+      const commentsResponse = await orthancFetch({
+        path: `/instances/${firstInstanceId}/content/0020-4000`,
+        method: 'GET',
+      });
+
+      if (!commentsResponse?.ok) {
+        return '';
+      }
+
+      const raw = ((await commentsResponse.text()) || '').trim();
+      const match = /^Group=(A|B)$/i.exec(raw);
+      return match ? match[1].toUpperCase() : '';
+    } catch (error) {
+      return '';
+    }
+  };
+
   const resolveInternalStudyId = async studyInstanceUID => {
     const id = await getOrthancStudyID(studyInstanceUID);
     if (!id) {
@@ -449,12 +488,13 @@ function TextArea({ servicesManager, showPrompt = true }) {
         return;
       }
 
-      const [studyPrompt, seriesPrompt, findings, impressions, group] = await Promise.all([
+      const [studyPrompt, seriesPrompt, findings, impressions, group, groupFromDicom] = await Promise.all([
         getMetadataOfStudy(studyID, 'Prompt'),
         getMetadataOfSeries(seriesID, 'SeriesPrompt'),
         getMetadataOfStudy(studyID, 'Findings'),
         getMetadataOfStudy(studyID, 'Impressions'),
         getMetadataOfStudy(studyID, 'Group'),
+        getGroupFromSeriesDicom(seriesID),
       ]);
 
       // Ignore stale async completion from older viewport/study selections.
@@ -465,7 +505,12 @@ function TextArea({ servicesManager, showPrompt = true }) {
       setReportPromptData(studyPrompt || seriesPrompt || '');
       setReportFindingsData(findings || '');
       setReportImpressionsData(impressions || '');
-      const normalizedGroup = group === 'A' || group === 'B' ? group : getLocalStudyGroup(studyInstanceUID);
+      const normalizedGroup =
+        group === 'A' || group === 'B'
+          ? group
+          : groupFromDicom === 'A' || groupFromDicom === 'B'
+            ? groupFromDicom
+            : getLocalStudyGroup(studyInstanceUID);
       setReportGroupData(normalizedGroup);
       setStatus('');
     } catch (error) {
