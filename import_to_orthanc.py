@@ -19,6 +19,7 @@ For each CSV row this script:
 from __future__ import annotations
 
 import argparse
+import array
 import csv
 import json
 import sys
@@ -114,13 +115,15 @@ def _make_base_dataset(
 
 
 def _build_dicom_from_jpg(row: Dict[str, str], image_path: Path, output_dir: Path) -> Path:
-    import numpy as np
     from PIL import Image
     from pydicom.uid import generate_uid
 
     image = Image.open(image_path).convert("L")
-    arr = np.asarray(image, dtype=np.uint16)
-    arr = ((arr.astype(np.float32) / max(1.0, float(arr.max()))) * 4095.0).astype(np.uint16)
+    pixels_8bit = list(image.getdata())
+    max_pixel = max(pixels_8bit) if pixels_8bit else 0
+    scale = 4095.0 / max(1.0, float(max_pixel))
+    pixels_12bit = [int(round(value * scale)) for value in pixels_8bit]
+    pixel_buffer = array.array("H", pixels_12bit)
 
     study_uid = generate_uid()
     series_uid = generate_uid()
@@ -143,8 +146,8 @@ def _build_dicom_from_jpg(row: Dict[str, str], image_path: Path, output_dir: Pat
 
     ds.SamplesPerPixel = 1
     ds.PhotometricInterpretation = "MONOCHROME2"
-    ds.Rows = int(arr.shape[0])
-    ds.Columns = int(arr.shape[1])
+    ds.Rows = int(image.height)
+    ds.Columns = int(image.width)
     ds.BitsAllocated = 16
     ds.BitsStored = 12
     ds.HighBit = 11
@@ -157,7 +160,7 @@ def _build_dicom_from_jpg(row: Dict[str, str], image_path: Path, output_dir: Pat
     ds.ViewPosition = row.get("ViewPosition") or ""
     ds.ImageType = ["ORIGINAL", "PRIMARY"]
     ds.StudyComments = row.get("report") or ""
-    ds.PixelData = arr.tobytes()
+    ds.PixelData = pixel_buffer.tobytes()
     ds.save_as(str(out_path), write_like_original=False)
     return out_path
 
@@ -220,6 +223,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Import JPG studies with CSV metadata into Orthanc.")
     parser.add_argument("--input-root", type=Path, default=Path("to_load"))
     parser.add_argument("--orthanc-url", default="http://localhost:8042")
+    parser.add_argument(
+        "--metadata-url",
+        default="http://localhost/pacs",
+        help="Base URL used to write study metadata (defaults to the local /pacs proxy).",
+    )
     parser.add_argument("--work-dir", type=Path, default=Path("/tmp/import_to_orthanc"))
     parser.add_argument("--clear-db", action="store_true", help="Delete all existing Orthanc studies before import.")
     parser.add_argument("--limit", type=int, default=0, help="Import at most N rows (0 = no limit).")
@@ -262,15 +270,19 @@ def main() -> int:
             upload_result = _upload_dicom(args.orthanc_url, dicom_path)
             orthanc_study_id = upload_result["ParentStudy"]
 
-            _put_study_metadata(args.orthanc_url, orthanc_study_id, "Report", report)
-            _put_study_metadata(args.orthanc_url, orthanc_study_id, "Group", group)
-            _put_study_metadata(args.orthanc_url, orthanc_study_id, "StudyName", study_name)
+            _put_study_metadata(args.metadata_url, orthanc_study_id, "Report", report)
+            _put_study_metadata(args.metadata_url, orthanc_study_id, "Group", group)
+            _put_study_metadata(args.metadata_url, orthanc_study_id, "StudyName", study_name)
 
             print(f"Imported study={study_name} group={group} image={image_path.name}")
             imported += 1
         except Exception as exc:
             failures += 1
-            print(f"FAILED {row.get('study_id', '<unknown>')}: {exc}", file=sys.stderr)
+            print(
+                f"FAILED {row.get('study_id', '<unknown>')} "
+                f"(csv={csv_path}, group={group}, image={row.get('dicom_id')}): {exc}",
+                file=sys.stderr,
+            )
 
     print(f"Done. imported={imported} failures={failures}")
     return 1 if failures else 0
