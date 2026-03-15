@@ -192,6 +192,47 @@ function WorkList({
   useEffect(() => {
     let cancelled = false;
 
+    const hydrateGroupsFromGeneratedMap = async () => {
+      try {
+        const response = await fetch('/study_groups.generated.json', { cache: 'no-store' });
+        if (!response.ok) {
+          return;
+        }
+        const remoteMap = await response.json();
+        if (!remoteMap || typeof remoteMap !== 'object') {
+          return;
+        }
+
+        const raw = localStorage.getItem(LOCAL_GROUPS_STORAGE_KEY);
+        const localMap = raw ? JSON.parse(raw) : {};
+        let changed = false;
+
+        Object.entries(remoteMap).forEach(([studyInstanceUid, groupValue]) => {
+          if ((groupValue === 'A' || groupValue === 'B') && localMap[studyInstanceUid] !== groupValue) {
+            localMap[studyInstanceUid] = groupValue;
+            changed = true;
+          }
+        });
+
+        if (changed && !cancelled) {
+          localStorage.setItem(LOCAL_GROUPS_STORAGE_KEY, JSON.stringify(localMap));
+          setGroupHydrationVersion(version => version + 1);
+        }
+      } catch (error) {
+        // Ignore missing generated map.
+      }
+    };
+
+    hydrateGroupsFromGeneratedMap();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
     const getStoredGroups = () => {
       try {
         const raw = localStorage.getItem(LOCAL_GROUPS_STORAGE_KEY);

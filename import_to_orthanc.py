@@ -277,6 +277,12 @@ def main() -> int:
         action="store_true",
         help="Upload DICOMs without writing Orthanc study metadata.",
     )
+    parser.add_argument(
+        "--group-map-output",
+        type=Path,
+        default=Path("Viewer/platform/app/public/study_groups.generated.json"),
+        help="JSON file where StudyInstanceUID -> Group mappings are written for the worklist.",
+    )
     args = parser.parse_args()
 
     if not args.input_root.exists():
@@ -292,6 +298,7 @@ def main() -> int:
 
     imported = 0
     failures = 0
+    generated_group_map: Dict[str, str] = {}
 
     for csv_path, group, row in _iter_csv_rows(args.input_root):
         if args.limit and imported >= args.limit:
@@ -322,6 +329,7 @@ def main() -> int:
             import pydicom
 
             ds = pydicom.dcmread(str(dicom_path), stop_before_pixels=True)
+            generated_group_map[str(ds.StudyInstanceUID)] = group
             orthanc_study_id = _resolve_study_id_from_uid(args.metadata_url, str(ds.StudyInstanceUID))
 
             if not args.skip_metadata:
@@ -353,6 +361,12 @@ def main() -> int:
                 f"(csv={csv_path}, group={group}, image={row.get('dicom_id')}): {exc}",
                 file=sys.stderr,
             )
+
+    if not args.dry_run:
+      args.group_map_output.parent.mkdir(parents=True, exist_ok=True)
+      with args.group_map_output.open("w", encoding="utf-8") as f:
+          json.dump(generated_group_map, f, indent=2, sort_keys=True)
+      print(f"Wrote group map: {args.group_map_output}")
 
     print(f"Done. imported={imported} failures={failures}")
     return 1 if failures else 0

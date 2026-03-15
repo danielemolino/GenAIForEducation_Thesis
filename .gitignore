@@ -63,6 +63,7 @@ orthanc_image.tar
 *.crdownload
 LOCAL_STATUS.md
 to_load/
+Viewer/platform/app/public/study_groups.generated.json
 
 # Node (root-level safety; Viewer has its own .gitignore)
 node_modules/
