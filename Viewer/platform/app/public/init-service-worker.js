@@ -4,6 +4,12 @@ navigator.serviceWorker.getRegistrations().then(function (registrations) {
   }
 });
 
+// Disable service worker registration for this deployment path.
+// The viewer is currently served through the webpack dev server and a reverse
+// proxy/zero-trust domain; keeping a service worker here causes stale JS
+// bundles to survive across restarts and makes debugging impossible.
+return;
+
 // https://developers.google.com/web/tools/workbox/modules/workbox-window
 // All major browsers that support service worker also support native JavaScript
 // modules, so it's perfectly fine to serve this code to any browsers
