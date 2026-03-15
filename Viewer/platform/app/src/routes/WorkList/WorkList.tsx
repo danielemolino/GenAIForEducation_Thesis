@@ -91,6 +91,7 @@ function WorkList({
     ...defaultFilterValues,
     ...sessionQueryFilterValues,
   });
+  const [, setGroupHydrationVersion] = useState(0);
 
   const debouncedFilterValues = useDebounce(filterValues, 200);
   const { resultsPerPage, pageNumber, sortBy, sortDirection } = filterValues;
@@ -187,6 +188,155 @@ function WorkList({
       document.body.classList.remove('bg-black');
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const getStoredGroups = () => {
+      try {
+        const raw = localStorage.getItem(LOCAL_GROUPS_STORAGE_KEY);
+        return raw ? JSON.parse(raw) : {};
+      } catch (error) {
+        return {};
+      }
+    };
+
+    const setStoredGroup = (studyInstanceUid, groupValue) => {
+      if (!studyInstanceUid || !['A', 'B'].includes(groupValue)) {
+        return false;
+      }
+      const map = getStoredGroups();
+      if (map?.[studyInstanceUid] === groupValue) {
+        return false;
+      }
+      map[studyInstanceUid] = groupValue;
+      try {
+        localStorage.setItem(LOCAL_GROUPS_STORAGE_KEY, JSON.stringify(map));
+        return true;
+      } catch (error) {
+        return false;
+      }
+    };
+
+    const orthancFetch = async (path, options = {}) => {
+      const attempts = [
+        { base: '/pacs', withAuth: true },
+        { base: '/pacs', withAuth: false },
+        { base: '', withAuth: true },
+        { base: '', withAuth: false },
+      ];
+      const auth = `Basic ${window.btoa('orthanc:orthanc')}`;
+
+      for (const attempt of attempts) {
+        const headers = { ...(options.headers || {}) };
+        if (attempt.withAuth) {
+          headers.Authorization = auth;
+        }
+        try {
+          const response = await fetch(`${attempt.base}${path}`, { ...options, headers });
+          if ([401, 403, 404].includes(response.status)) {
+            continue;
+          }
+          return response;
+        } catch (error) {
+          // Try next endpoint variant.
+        }
+      }
+
+      return null;
+    };
+
+    const getGroupFromStudy = async studyInstanceUid => {
+      const lookupResponse = await orthancFetch('/tools/find', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          Level: 'Study',
+          Expand: true,
+          Query: { StudyInstanceUID: studyInstanceUid },
+        }),
+      });
+      if (!lookupResponse?.ok) {
+        return '';
+      }
+
+      const studiesData = await lookupResponse.json();
+      const orthancStudyId = studiesData?.[0]?.ID;
+      if (!orthancStudyId) {
+        return '';
+      }
+
+      for (const key of ['Group', '1027']) {
+        const metadataResponse = await orthancFetch(`/studies/${orthancStudyId}/metadata/${key}`);
+        if (metadataResponse?.ok) {
+          const value = ((await metadataResponse.text()) || '').trim();
+          if (value === 'A' || value === 'B') {
+            return value;
+          }
+        }
+      }
+
+      const studyResponse = await orthancFetch(`/studies/${orthancStudyId}`);
+      if (!studyResponse?.ok) {
+        return '';
+      }
+      const studyInfo = await studyResponse.json();
+      const firstSeriesId = studyInfo?.Series?.[0];
+      if (!firstSeriesId) {
+        return '';
+      }
+
+      const seriesResponse = await orthancFetch(`/series/${firstSeriesId}`);
+      if (!seriesResponse?.ok) {
+        return '';
+      }
+      const seriesInfo = await seriesResponse.json();
+      const firstInstanceId = seriesInfo?.Instances?.[0];
+      if (!firstInstanceId) {
+        return '';
+      }
+
+      const commentsResponse = await orthancFetch(`/instances/${firstInstanceId}/content/0020-4000`);
+      if (!commentsResponse?.ok) {
+        return '';
+      }
+      const raw = ((await commentsResponse.text()) || '').trim();
+      const match = /^Group=(A|B)$/i.exec(raw);
+      return match ? match[1].toUpperCase() : '';
+    };
+
+    const hydrateGroups = async () => {
+      const pendingStudies = visibleStudies.filter(study => getLocalStudyGroup(study) === 'None');
+      if (!pendingStudies.length) {
+        return;
+      }
+
+      let changed = false;
+      for (const study of pendingStudies) {
+        if (cancelled) {
+          return;
+        }
+        const studyInstanceUid = study?.studyInstanceUid;
+        if (!studyInstanceUid) {
+          continue;
+        }
+        const group = await getGroupFromStudy(studyInstanceUid);
+        if (group === 'A' || group === 'B') {
+          changed = setStoredGroup(studyInstanceUid, group) || changed;
+        }
+      }
+
+      if (changed && !cancelled) {
+        setGroupHydrationVersion(version => version + 1);
+      }
+    };
+
+    hydrateGroups();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [visibleStudies]);
 
   // Sync URL query parameters with filters
   useEffect(() => {
