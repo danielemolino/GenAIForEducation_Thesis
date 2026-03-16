@@ -92,7 +92,17 @@ function areEqual(prevProps, nextProps) {
     // check if their imageIds are the same
     if (foundDisplaySet.images?.length) {
       for (let j = 0; j < foundDisplaySet.images.length; j++) {
-        if (foundDisplaySet.images[j].imageId !== prevDisplaySet.images[j].imageId) {
+        const nextImage = foundDisplaySet.images?.[j];
+        const prevImage = prevDisplaySet.images?.[j];
+
+        // Display sets can be hydrated asynchronously while the viewport is
+        // mounting; treat partially populated arrays as a change instead of
+        // crashing on an undefined image entry.
+        if (!nextImage || !prevImage) {
+          return false;
+        }
+
+        if (nextImage.imageId !== prevImage.imageId) {
           return false;
         }
       }
