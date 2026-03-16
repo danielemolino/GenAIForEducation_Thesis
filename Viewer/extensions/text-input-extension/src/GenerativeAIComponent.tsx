@@ -7,18 +7,18 @@ import axios from 'axios';
 
 const PROMPT_EXAMPLES = {
   ct: [
-    'Findings: Mild bilateral pleural effusions with dependent bibasal atelectatic changes. No focal consolidation. Impression: Small pleural effusions with bibasal atelectasis.',
-    'Findings: Right lower lobe consolidation with surrounding ground-glass opacity. No pleural effusion. Impression: Right lower lobe pneumonia.',
-    'Findings: Mild cardiomegaly. Interlobular septal thickening and diffuse bilateral ground-glass opacities. Impression: Pulmonary edema in a congestive heart failure pattern.',
-    'Findings: Large left pneumothorax with partial collapse of the left lung. Mild rightward mediastinal shift. Impression: Tension pneumothorax on the left.',
-    'Findings: Multiple bilateral peripheral ground-glass opacities, more evident in the lower lobes. Impression: Multifocal atypical inflammatory process.',
+    'Findings: Multiple bilateral peripheral ground-glass opacities, more evident in the lower lobes, without pleural effusion or significant lymphadenopathy. Impression: Multifocal atypical pneumonia pattern, including viral pneumonia.',
+    'Findings: Focal air-space consolidation is present in the anteromedial basal segment of the left lower lobe, without pleural effusion. Impression: Left lower lobe pneumonia.',
+    'Findings: Bilateral diffuse ground-glass opacities with smooth interlobular septal thickening and mild mosaic attenuation are present, with no focal lobar consolidation. Impression: Pulmonary edema, likely cardiogenic.',
+    'Findings: Multiple bilateral pulmonary nodules of varying size are seen in both lungs, with associated post-treatment pleural-parenchymal change in the left upper lobe and mild bilateral peribronchial thickening. Impression: Multiple pulmonary metastases with post-treatment change.',
+    'Findings: Endobronchial soft-tissue lesion is present in the lingular bronchus with an associated irregular left upper lobe pulmonary nodule, mediastinal lymphadenopathy, and a left adrenal mass. Impression: Primary lung malignancy with mediastinal nodal involvement and left adrenal metastasis.',
   ],
   xray: [
-    'Findings: Cardiomediastinal silhouette is within normal limits. No focal airspace consolidation, pleural effusion, or pneumothorax. Impression: No acute cardiopulmonary abnormality.',
-    'Findings: Patchy left basilar opacity with blunting of the left costophrenic angle. Impression: Left basilar infiltrate with small pleural effusion.',
-    'Findings: Mild enlargement of the cardiac silhouette with diffuse bilateral perihilar opacities. Impression: Mild cardiogenic pulmonary edema.',
-    'Findings: Hyperinflated lungs with flattening of the diaphragms. No focal consolidation. Impression: Chronic hyperinflation compatible with COPD.',
-    'Findings: Rounded right upper lobe opacity measuring approximately 2 cm. No pleural effusion. Impression: Solitary right upper lobe pulmonary nodule requiring further evaluation.',
+    'No acute cardiopulmonary process.',
+    'Left lower lung opacity concerning for pneumonia.',
+    'Moderate pulmonary edema with moderate to large bilateral pleural effusions and bibasilar atelectasis.',
+    'Moderate left pleural effusion with adjacent atelectasis in the left lung base.',
+    'Left upper lobe collapse, with a similar appearing large left hilar mass and trace left pleural effusion. No pneumothorax identified.',
   ],
 };
 
