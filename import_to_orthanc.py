@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional
 from urllib import error, request
 
+EMPTY_GENERATIVE_STUDY_UID = "1.2.826.0.1.3680043.8.498.92334923612841918328708913924036869452"
+
 
 def _http_request(
     url: str,
@@ -179,6 +181,63 @@ def _build_dicom_from_jpg(row: Dict[str, str], image_path: Path, output_dir: Pat
     ds.PixelData = pixel_buffer.tobytes()
     ds.save_as(str(out_path), write_like_original=False)
     return out_path
+
+
+def _create_empty_xray_placeholder_dicom(output_dir: Path) -> Path:
+    from pydicom.uid import generate_uid
+
+    study_name = "GenerativeAI Placeholder (Hidden)"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / "generation_empty_file.dcm"
+    ds = _make_base_dataset(
+        out_path=out_path,
+        sop_instance_uid=generate_uid(),
+        study_uid=EMPTY_GENERATIVE_STUDY_UID,
+        series_uid=generate_uid(),
+        patient_name="GENAI_PLACEHOLDER",
+        patient_id="GENAI0001",
+        study_name=study_name,
+    )
+
+    pixels = array.array("H", [0] * (512 * 512))
+    ds.AccessionNumber = "GENAIEMPTY"
+    ds.StudyID = "GENAI_EMPTY"
+    ds.PatientName = "GENAI^PLACEHOLDER"
+    ds.Modality = "DX"
+    ds.SeriesDescription = "GenerativeAI Placeholder"
+    ds.StudyDescription = study_name
+    ds.SamplesPerPixel = 1
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.Rows = 512
+    ds.Columns = 512
+    ds.BitsAllocated = 16
+    ds.BitsStored = 16
+    ds.HighBit = 15
+    ds.PixelRepresentation = 0
+    ds.WindowWidth = 2000
+    ds.WindowCenter = 1000
+    ds.ImageType = ["ORIGINAL", "PRIMARY"]
+    ds.PixelData = pixels.tobytes()
+    ds.save_as(str(out_path), write_like_original=False)
+    return out_path
+
+
+def _ensure_empty_generative_study(
+    orthanc_url: str,
+    metadata_url: str,
+    work_dir: Path,
+) -> None:
+    existing = _resolve_study_id_from_uid(metadata_url, EMPTY_GENERATIVE_STUDY_UID)
+    if existing:
+        print(f"Placeholder study already present: {EMPTY_GENERATIVE_STUDY_UID}")
+        return
+
+    placeholder = _create_empty_xray_placeholder_dicom(work_dir / "bootstrap")
+    _upload_dicom(orthanc_url, placeholder)
+    resolved = _resolve_study_id_from_uid(metadata_url, EMPTY_GENERATIVE_STUDY_UID)
+    if not resolved:
+        raise RuntimeError("Unable to resolve placeholder study after upload")
+    print(f"Created placeholder study: {EMPTY_GENERATIVE_STUDY_UID}")
 
 
 def _upload_dicom(orthanc_url: str, dicom_path: Path) -> Dict:
@@ -362,10 +421,11 @@ def main() -> int:
             )
 
     if not args.dry_run:
-      args.group_map_output.parent.mkdir(parents=True, exist_ok=True)
-      with args.group_map_output.open("w", encoding="utf-8") as f:
-          json.dump(generated_group_map, f, indent=2, sort_keys=True)
-      print(f"Wrote group map: {args.group_map_output}")
+        args.group_map_output.parent.mkdir(parents=True, exist_ok=True)
+        with args.group_map_output.open("w", encoding="utf-8") as f:
+            json.dump(generated_group_map, f, indent=2, sort_keys=True)
+        print(f"Wrote group map: {args.group_map_output}")
+        _ensure_empty_generative_study(args.orthanc_url, args.metadata_url, args.work_dir)
 
     print(f"Done. imported={imported} failures={failures}")
     return 1 if failures else 0
