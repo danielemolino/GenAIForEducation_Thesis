@@ -2,6 +2,7 @@ import { id } from './id';
 import ReportSidePanelComponent from './ReportSidePanelComponent.tsx';
 import GenerativeAIComponent from './GenerativeAIComponent.tsx';
 import ViewerReportPanelComponent from './ViewerReportPanelComponent.tsx';
+import genAiMprProtocol from './hangingprotocols/genAiMpr.ts';
 import twoOneProtocol from './hangingprotocols/twoOne.ts';
 /**
  * You can remove any of the following modules if you don't need them.
@@ -108,6 +109,10 @@ export default {
   getHangingProtocolModule: ({ servicesManager, commandsManager, extensionManager }) => {
     // the twoOneGenAI protocol will be registred and can be consumed by any extension
     return [
+      {
+        name: genAiMprProtocol.id,
+        protocol: genAiMprProtocol,
+      },
       {
         name: twoOneProtocol.id,
         protocol: twoOneProtocol,
