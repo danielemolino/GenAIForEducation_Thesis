@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """
-Batch import JPG samples described by selected_reports.csv files into Orthanc.
+Batch import JPG samples into Orthanc.
 
-Expected layout under --input-root:
-  to_load/<dataset>/<group>/selected_reports.csv
-  to_load/<dataset>/<group>/<relative image path from CSV>.jpg
+Supported layouts under --input-root:
 
-For each CSV row this script:
-  - builds a single-frame DX DICOM from the JPG
-  - uses the study_id as the visible study name/description
-  - uploads the DICOM to Orthanc
-  - stores Orthanc study metadata:
-      Report -> CSV report
-      Group -> A or B
-      StudyName -> CSV study_id
+1) Legacy CSV layout:
+   to_load/<dataset>/<group>/selected_reports.csv
+   to_load/<dataset>/<group>/<relative image path from CSV>.jpg
+
+2) Per-study TXT layout:
+   to_load/<dataset>/<group>/<study_id>/<image>.jpg
+   to_load/<dataset>/<group>/<study_id>/report.txt
+   or
+   to_load/<dataset>/<group>/<study_id>/<image>.txt
+
+Only datasets Healthy, Edema and Pneumo are imported, and only groups A/B.
 """
 
 from __future__ import annotations
 
 import argparse
 import array
-import csv
 import json
 import time
 import sys
@@ -126,7 +126,7 @@ def _build_dicom_from_jpg(row: Dict[str, str], image_path: Path, output_dir: Pat
     from pydicom.uid import generate_uid
 
     image = Image.open(image_path).convert("L")
-    pixels_8bit = list(image.getdata())
+    pixels_8bit = list(image.getdata(band=0))
     # Preserve the JPEG appearance as much as possible instead of stretching the
     # full range aggressively; these files are already display-ready images.
     pixel_buffer = array.array("H", pixels_8bit)
@@ -292,29 +292,51 @@ def _clear_orthanc(orthanc_url: str) -> int:
     return deleted
 
 
-def _iter_csv_rows(input_root: Path) -> Iterable[tuple[Path, str, Dict[str, str]]]:
-    for csv_path in sorted(input_root.rglob("selected_reports.csv")):
-        group = csv_path.parent.name
-        if group not in {"A", "B"}:
+ALLOWED_DATASETS = {"Healthy", "Edema", "Pneumo"}
+ALLOWED_GROUPS = {"A", "B"}
+
+
+def _study_name_from_dir(study_dir: Path) -> str:
+    raw = study_dir.name
+    if raw.startswith("s") and raw[1:].isdigit():
+        return raw[1:]
+    return raw
+
+
+def _resolve_report_text(study_dir: Path, image_path: Path) -> str:
+    candidates = [
+        image_path.with_suffix(".txt"),
+        study_dir / "report.txt",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.read_text(encoding="utf-8").strip()
+    raise FileNotFoundError(f"Report text not found for image {image_path}")
+
+
+def _iter_txt_rows(input_root: Path) -> Iterable[tuple[Path, str, Dict[str, str]]]:
+    for dataset_dir in sorted(p for p in input_root.iterdir() if p.is_dir()):
+        if dataset_dir.name not in ALLOWED_DATASETS:
             continue
-        with csv_path.open(newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                yield csv_path, group, row
-
-
-def _resolve_local_image(csv_path: Path, row: Dict[str, str]) -> Path:
-    relative_dicom = Path(row["path"])
-    relative_image = relative_dicom.with_suffix(".jpg")
-    local_image = csv_path.parent / relative_image
-    if local_image.exists():
-        return local_image
-
-    fallback = csv_path.parent.rglob(f"{row['dicom_id']}.jpg")
-    for candidate in fallback:
-        return candidate
-
-    raise FileNotFoundError(f"Image not found for study {row.get('study_id')} ({row.get('dicom_id')})")
+        for group_dir in sorted(p for p in dataset_dir.iterdir() if p.is_dir()):
+            if group_dir.name not in ALLOWED_GROUPS:
+                continue
+            for study_dir in sorted(p for p in group_dir.iterdir() if p.is_dir()):
+                jpgs = sorted(study_dir.glob("*.jpg"))
+                if not jpgs:
+                    continue
+                image_path = jpgs[0]
+                report_text = _resolve_report_text(study_dir, image_path)
+                study_name = _study_name_from_dir(study_dir)
+                yield study_dir, group_dir.name, {
+                    "study_id": study_name,
+                    "subject_id": study_name,
+                    "dicom_id": image_path.stem,
+                    "image_path": str(image_path),
+                    "report": report_text,
+                    "impression": report_text,
+                    "ViewPosition": "",
+                }
 
 
 def main() -> int:
@@ -358,20 +380,20 @@ def main() -> int:
     failures = 0
     generated_group_map: Dict[str, str] = {}
 
-    for csv_path, group, row in _iter_csv_rows(args.input_root):
+    for source_path, group, row in _iter_txt_rows(args.input_root):
         if args.limit and imported >= args.limit:
             break
 
         try:
             row["group"] = group
-            image_path = _resolve_local_image(csv_path, row)
+            image_path = Path(row["image_path"])
             study_name = row["study_id"]
             report = row.get("report") or ""
             impression = row.get("impression") or ""
             same_text = report.strip().casefold() == impression.strip().casefold() if report and impression else False
             findings_value = "" if same_text else report
             impressions_value = impression or report
-            work_dir = args.work_dir / csv_path.parent.parent.name / group / study_name
+            work_dir = args.work_dir / source_path.parent.parent.name / group / study_name
 
             if args.dry_run:
                 print(
@@ -416,7 +438,7 @@ def main() -> int:
             failures += 1
             print(
                 f"FAILED {row.get('study_id', '<unknown>')} "
-                f"(csv={csv_path}, group={group}, image={row.get('dicom_id')}): {exc}",
+                f"(source={source_path}, group={group}, image={row.get('dicom_id')}): {exc}",
                 file=sys.stderr,
             )
 
