@@ -269,70 +269,47 @@ export default PanelStudyBrowser;
  */
 function _mapDataSourceStudies(studies) {
   return studies.map(study => {
+    const main = study?.MainDicomTags || {};
+    const patient = study?.PatientMainDicomTags || {};
     // TODO: Why does the data source return in this format?
     return {
-      AccessionNumber: study.accession,
-      StudyDate: study.date,
-      StudyDescription: study.description,
-      NumInstances: study.instances,
-      ModalitiesInStudy: study.modalities,
-      PatientID: study.mrn,
-      PatientName: study.patientName,
-      StudyInstanceUID: study.studyInstanceUid,
-      StudyTime: study.time,
+      AccessionNumber: study.accession || main.AccessionNumber || '',
+      StudyDate: study.date || main.StudyDate || '',
+      StudyDescription: study.description || main.StudyDescription || '',
+      NumInstances: study.instances || study.NumberOfStudyRelatedInstances || 0,
+      ModalitiesInStudy: study.modalities || main.ModalitiesInStudy || '',
+      PatientID: study.mrn || patient.PatientID || '',
+      PatientName: study.patientName || patient.PatientName || '',
+      StudyInstanceUID: study.studyInstanceUid || main.StudyInstanceUID || '',
+      StudyTime: study.time || main.StudyTime || '',
     };
   });
 }
 
 async function _getAllStudiesFromOrthanc() {
   const authHeader = `Basic ${window.btoa('orthanc:orthanc')}`;
-  const studiesResponse = await fetch('/pacs/studies', {
+  const studiesResponse = await fetch('/pacs/tools/find', {
+    method: 'POST',
     headers: {
       Authorization: authHeader,
+      'Content-Type': 'application/json',
     },
+    body: JSON.stringify({
+      Level: 'Study',
+      Expand: true,
+      Query: {},
+    }),
   });
   if (!studiesResponse.ok) {
-    throw new Error(`Unable to list Orthanc studies: ${studiesResponse.status}`);
+    throw new Error(`Unable to query Orthanc studies: ${studiesResponse.status}`);
   }
 
-  const studyIds = await studiesResponse.json();
-  const studyDetails = await Promise.all(
-    studyIds.map(async studyId => {
-      const response = await fetch(`/pacs/studies/${studyId}`, {
-        headers: {
-          Authorization: authHeader,
-        },
-      });
-      if (!response.ok) {
-        return null;
-      }
+  const studyDetails = await studiesResponse.json();
 
-      const study = await response.json();
-      const main = study?.MainDicomTags || {};
-      if (main.StudyInstanceUID === GENERATIVE_AI_PLACEHOLDER_STUDY_UID) {
-        return null;
-      }
-
-      const patient = study?.PatientMainDicomTags || {};
-      const series = Array.isArray(study?.Series) ? study.Series.length : 0;
-
-      return {
-        accession: main.AccessionNumber || '',
-        date: main.StudyDate || '',
-        description: main.StudyDescription || '',
-        instances: series,
-        modalities: Array.isArray(main.ModalitiesInStudy)
-          ? main.ModalitiesInStudy.join('\\')
-          : main.ModalitiesInStudy || '',
-        mrn: patient.PatientID || '',
-        patientName: patient.PatientName || '',
-        studyInstanceUid: main.StudyInstanceUID || '',
-        time: main.StudyTime || '',
-      };
-    })
-  );
-
-  return studyDetails.filter(Boolean);
+  return studyDetails.filter(study => {
+    const uid = study?.MainDicomTags?.StudyInstanceUID;
+    return uid && uid !== GENERATIVE_AI_PLACEHOLDER_STUDY_UID;
+  });
 }
 
 function _mapDisplaySets(displaySets, thumbnailImageSrcMap) {
