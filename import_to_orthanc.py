@@ -292,7 +292,7 @@ def _clear_orthanc(orthanc_url: str) -> int:
     return deleted
 
 
-ALLOWED_DATASETS = {"Healthy", "Edema", "Pneumo"}
+DEFAULT_ALLOWED_DATASETS = {"Healthy", "Edema", "Pneumo"}
 ALLOWED_GROUPS = {"A", "B"}
 
 
@@ -314,9 +314,9 @@ def _resolve_report_text(study_dir: Path, image_path: Path) -> str:
     raise FileNotFoundError(f"Report text not found for image {image_path}")
 
 
-def _iter_txt_rows(input_root: Path) -> Iterable[tuple[Path, str, Dict[str, str]]]:
+def _iter_txt_rows(input_root: Path, allowed_datasets: set[str]) -> Iterable[tuple[Path, str, Dict[str, str]]]:
     for dataset_dir in sorted(p for p in input_root.iterdir() if p.is_dir()):
-        if dataset_dir.name not in ALLOWED_DATASETS:
+        if dataset_dir.name not in allowed_datasets:
             continue
         for group_dir in sorted(p for p in dataset_dir.iterdir() if p.is_dir()):
             if group_dir.name not in ALLOWED_GROUPS:
@@ -363,7 +363,15 @@ def main() -> int:
         default=Path("Viewer/platform/app/public/study_groups.generated.json"),
         help="JSON file where StudyInstanceUID -> Group mappings are written for the worklist.",
     )
+    parser.add_argument(
+        "--datasets",
+        default="Healthy,Edema,Pneumo",
+        help="Comma-separated dataset names to import, e.g. Other or Healthy,Edema,Pneumo.",
+    )
     args = parser.parse_args()
+    allowed_datasets = {item.strip() for item in args.datasets.split(",") if item.strip()}
+    if not allowed_datasets:
+        allowed_datasets = set(DEFAULT_ALLOWED_DATASETS)
 
     if not args.input_root.exists():
         print(f"Input root not found: {args.input_root}", file=sys.stderr)
@@ -380,7 +388,7 @@ def main() -> int:
     failures = 0
     generated_group_map: Dict[str, str] = {}
 
-    for source_path, group, row in _iter_txt_rows(args.input_root):
+    for source_path, group, row in _iter_txt_rows(args.input_root, allowed_datasets):
         if args.limit and imported >= args.limit:
             break
 
