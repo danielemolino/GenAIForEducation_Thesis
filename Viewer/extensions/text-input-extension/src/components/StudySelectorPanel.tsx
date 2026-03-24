@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
-import { useImageViewer } from '@ohif/ui';
-import { useLocation, useNavigate } from 'react-router-dom';
+import requestDisplaySetCreationForStudy from '@ohif/extension-default/src/Panels/requestDisplaySetCreationForStudy';
 
 const LOCAL_GROUPS_STORAGE_KEY = 'studyGroupByUID';
 const GENERATIVE_AI_PLACEHOLDER_STUDY_UID =
@@ -59,15 +58,14 @@ function formatStudyLabel(study) {
   return pieces.join(' - ') || study.studyInstanceUid;
 }
 
-function StudySelectorPanel({ extensionManager }) {
+function StudySelectorPanel({ extensionManager, servicesManager }) {
   const dataSource = extensionManager.getDataSources()[0];
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { StudyInstanceUIDs = [] } = useImageViewer();
+  const { displaySetService, uiNotificationService } = servicesManager.services;
   const [studies, setStudies] = useState([]);
   const [importedGroupMap, setImportedGroupMap] = useState({});
   const [searchText, setSearchText] = useState('');
   const [groupFilter, setGroupFilter] = useState('All');
+  const [loadedStudyUIDs, setLoadedStudyUIDs] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,6 +87,36 @@ function StudySelectorPanel({ extensionManager }) {
       cancelled = true;
     };
   }, [dataSource]);
+
+  useEffect(() => {
+    const syncLoadedStudies = () => {
+      const activeDisplaySets = displaySetService.getActiveDisplaySets() || [];
+      const studyUIDs = [
+        ...new Set(
+          activeDisplaySets
+            .map(displaySet => displaySet?.StudyInstanceUID)
+            .filter(Boolean)
+        ),
+      ];
+      setLoadedStudyUIDs(studyUIDs);
+    };
+
+    syncLoadedStudies();
+
+    const addedSubscription = displaySetService.subscribe(
+      displaySetService.EVENTS.DISPLAY_SETS_ADDED,
+      syncLoadedStudies
+    );
+    const changedSubscription = displaySetService.subscribe(
+      displaySetService.EVENTS.DISPLAY_SETS_CHANGED,
+      syncLoadedStudies
+    );
+
+    return () => {
+      addedSubscription.unsubscribe();
+      changedSubscription.unsubscribe();
+    };
+  }, [displaySetService]);
 
   useEffect(() => {
     let cancelled = false;
@@ -149,22 +177,26 @@ function StudySelectorPanel({ extensionManager }) {
       });
   }, [studies, importedGroupMap, searchText, groupFilter]);
 
-  const addStudyToViewer = studyInstanceUid => {
+  const addStudyToViewer = async studyInstanceUid => {
     if (!studyInstanceUid) {
       return;
     }
 
-    const params = new URLSearchParams(location.search);
-    const current = params.getAll('StudyInstanceUIDs');
-    params.delete('StudyInstanceUIDs');
-
-    const merged = [...current];
-    if (!merged.includes(studyInstanceUid)) {
-      merged.push(studyInstanceUid);
+    try {
+      await requestDisplaySetCreationForStudy(
+        dataSource,
+        displaySetService,
+        studyInstanceUid,
+        true
+      );
+    } catch (error) {
+      uiNotificationService.show({
+        title: 'Load study',
+        message: 'The selected study could not be loaded into the current viewer.',
+        type: 'error',
+        duration: 3000,
+      });
     }
-
-    merged.forEach(uid => params.append('StudyInstanceUIDs', uid));
-    navigate({ pathname: location.pathname, search: params.toString() }, { replace: false });
   };
 
   return (
@@ -192,7 +224,7 @@ function StudySelectorPanel({ extensionManager }) {
       </div>
       <div className="flex flex-col gap-2">
         {filteredStudies.map(study => {
-          const loaded = StudyInstanceUIDs.includes(study.studyInstanceUid);
+          const loaded = loadedStudyUIDs.includes(study.studyInstanceUid);
           const group = getStudyGroup(study.studyInstanceUid, importedGroupMap);
           return (
             <button
@@ -217,6 +249,7 @@ function StudySelectorPanel({ extensionManager }) {
 
 StudySelectorPanel.propTypes = {
   extensionManager: PropTypes.object.isRequired,
+  servicesManager: PropTypes.object.isRequired,
 };
 
 export default StudySelectorPanel;
