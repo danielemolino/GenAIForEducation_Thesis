@@ -60,12 +60,27 @@ function formatStudyLabel(study) {
   return pieces.join(' - ') || study.studyInstanceUid;
 }
 
+async function waitForStudyDisplaySet(displaySetService, studyInstanceUid, retries = 20, delayMs = 150) {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const activeDisplaySets = displaySetService.getActiveDisplaySets() || [];
+    const matchedDisplaySet = activeDisplaySets.find(
+      displaySet => displaySet?.StudyInstanceUID === studyInstanceUid
+    );
+    if (matchedDisplaySet) {
+      return matchedDisplaySet;
+    }
+    await new Promise(resolve => window.setTimeout(resolve, delayMs));
+  }
+
+  return null;
+}
+
 function StudySelectorPanel({ extensionManager, servicesManager }) {
   const dataSource = extensionManager.getDataSources()[0];
   const navigate = useNavigate();
   const location = useLocation();
   const { StudyInstanceUIDs = [] } = useImageViewer();
-  const { displaySetService, uiNotificationService } = servicesManager.services;
+  const { displaySetService, uiNotificationService, viewportGridService } = servicesManager.services;
   const [studies, setStudies] = useState([]);
   const [importedGroupMap, setImportedGroupMap] = useState({});
   const [searchText, setSearchText] = useState('');
@@ -207,10 +222,49 @@ function StudySelectorPanel({ extensionManager, servicesManager }) {
         },
         { replace: false }
       );
+
+      const loadedDisplaySet = await waitForStudyDisplaySet(displaySetService, studyInstanceUid);
+      if (!loadedDisplaySet?.displaySetInstanceUID) {
+        throw new Error('Display set not available after loading study');
+      }
+
+      let gridState = viewportGridService.getState();
+      if ((gridState?.numCols || 1) * (gridState?.numRows || 1) < 2) {
+        const existingViewports = Array.from(gridState.viewports.values());
+        const preservedViewport = existingViewports[0];
+        viewportGridService.setLayout({
+          numCols: 2,
+          numRows: 1,
+          findOrCreateViewport: position => {
+            if (position === 0 && preservedViewport) {
+              return { ...preservedViewport };
+            }
+            return {};
+          },
+          activeViewportId: preservedViewport?.viewportId,
+          isHangingProtocolLayout: false,
+        });
+        gridState = viewportGridService.getState();
+      }
+
+      const viewports = Array.from(gridState.viewports.values());
+      const targetViewport =
+        viewports.find(viewport => viewport.viewportId !== gridState.activeViewportId) ||
+        viewports[0];
+
+      if (!targetViewport?.viewportId) {
+        throw new Error('No target viewport available');
+      }
+
+      viewportGridService.setDisplaySetsForViewport({
+        viewportId: targetViewport.viewportId,
+        displaySetInstanceUIDs: [loadedDisplaySet.displaySetInstanceUID],
+      });
+      viewportGridService.setActiveViewportId(targetViewport.viewportId);
     } catch (error) {
       uiNotificationService.show({
         title: 'Load study',
-        message: 'The selected study could not be loaded into the current viewer.',
+        message: 'The selected study could not be opened in the current viewer.',
         type: 'error',
         duration: 3000,
       });
