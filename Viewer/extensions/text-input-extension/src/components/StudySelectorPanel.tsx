@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
+import { useImageViewer } from '@ohif/ui';
+import { useLocation, useNavigate } from 'react-router-dom';
 import requestDisplaySetCreationForStudy from '@ohif/extension-default/src/Panels/requestDisplaySetCreationForStudy';
 
 const LOCAL_GROUPS_STORAGE_KEY = 'studyGroupByUID';
@@ -60,6 +62,9 @@ function formatStudyLabel(study) {
 
 function StudySelectorPanel({ extensionManager, servicesManager }) {
   const dataSource = extensionManager.getDataSources()[0];
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { StudyInstanceUIDs = [] } = useImageViewer();
   const { displaySetService, uiNotificationService } = servicesManager.services;
   const [studies, setStudies] = useState([]);
   const [importedGroupMap, setImportedGroupMap] = useState({});
@@ -183,11 +188,24 @@ function StudySelectorPanel({ extensionManager, servicesManager }) {
     }
 
     try {
-      await requestDisplaySetCreationForStudy(
+      requestDisplaySetCreationForStudy(
         dataSource,
         displaySetService,
         studyInstanceUid,
         true
+      );
+
+      const params = new URLSearchParams(location.search);
+      const currentStudyUIDs = params.getAll('StudyInstanceUIDs');
+      const mergedStudyUIDs = [...new Set([...currentStudyUIDs, ...StudyInstanceUIDs, studyInstanceUid])];
+      params.delete('StudyInstanceUIDs');
+      mergedStudyUIDs.forEach(uid => params.append('StudyInstanceUIDs', uid));
+      navigate(
+        {
+          pathname: location.pathname,
+          search: params.toString(),
+        },
+        { replace: false }
       );
     } catch (error) {
       uiNotificationService.show({
