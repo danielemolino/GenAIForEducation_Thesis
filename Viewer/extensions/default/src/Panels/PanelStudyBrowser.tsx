@@ -59,11 +59,15 @@ function PanelStudyBrowser({
 
   // ~~ studyDisplayList
   useEffect(() => {
-    // Fetch all studies for the patient in each primary study
-    async function fetchStudiesForPatient(StudyInstanceUID) {
-      // current study qido
+    let cancelled = false;
+
+    async function fetchAvailableStudies() {
+      if (!StudyInstanceUIDs?.length) {
+        return;
+      }
+
       const qidoForStudyUID = await dataSource.query.studies.search({
-        studyInstanceUid: StudyInstanceUID,
+        studyInstanceUid: StudyInstanceUIDs[0],
       });
 
       if (!qidoForStudyUID?.length) {
@@ -71,17 +75,21 @@ function PanelStudyBrowser({
         throw new Error('Invalid study URL');
       }
 
-      let qidoStudiesForPatient = qidoForStudyUID;
+      let qidoStudies = qidoForStudyUID;
 
-      // try to fetch the prior studies based on the patientID if the
-      // server can respond.
+      // Prefer the full study list from the datasource so the user can load
+      // another study from the DB and drag it into a second viewport.
       try {
-        qidoStudiesForPatient = await getStudiesForPatientByMRN(qidoForStudyUID);
+        qidoStudies = await dataSource.query.studies.search({});
       } catch (error) {
-        console.warn(error);
+        try {
+          qidoStudies = await getStudiesForPatientByMRN(qidoForStudyUID);
+        } catch (fallbackError) {
+          console.warn(fallbackError);
+        }
       }
 
-      const mappedStudies = _mapDataSourceStudies(qidoStudiesForPatient);
+      const mappedStudies = _mapDataSourceStudies(qidoStudies);
       const actuallyMappedStudies = mappedStudies.map(qidoStudy => {
         return {
           studyInstanceUid: qidoStudy.StudyInstanceUID,
@@ -92,18 +100,16 @@ function PanelStudyBrowser({
         };
       });
 
-      setStudyDisplayList(prevArray => {
-        const ret = [...prevArray];
-        for (const study of actuallyMappedStudies) {
-          if (!prevArray.find(it => it.studyInstanceUid === study.studyInstanceUid)) {
-            ret.push(study);
-          }
-        }
-        return ret;
-      });
+      if (!cancelled) {
+        setStudyDisplayList(actuallyMappedStudies);
+      }
     }
 
-    StudyInstanceUIDs.forEach(sid => fetchStudiesForPatient(sid));
+    fetchAvailableStudies().catch(error => console.warn(error));
+
+    return () => {
+      cancelled = true;
+    };
   }, [StudyInstanceUIDs, dataSource, getStudiesForPatientByMRN, navigate]);
 
   // // ~~ Initial Thumbnails
