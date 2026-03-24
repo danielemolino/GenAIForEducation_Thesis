@@ -5,6 +5,8 @@ import { utils } from '@ohif/core';
 import { useNavigate } from 'react-router-dom';
 
 const { sortStudyInstances, formatDate } = utils;
+const GENERATIVE_AI_PLACEHOLDER_STUDY_UID =
+  '1.2.826.0.1.3680043.8.498.92334923612841918328708913924036869452';
 
 /**
  *
@@ -80,7 +82,7 @@ function PanelStudyBrowser({
       // Prefer the full study list from the datasource so the user can load
       // another study from the DB and drag it into a second viewport.
       try {
-        qidoStudies = await dataSource.query.studies.search({});
+        qidoStudies = await _getAllStudiesFromOrthanc();
       } catch (error) {
         try {
           qidoStudies = await getStudiesForPatientByMRN(qidoForStudyUID);
@@ -280,6 +282,57 @@ function _mapDataSourceStudies(studies) {
       StudyTime: study.time,
     };
   });
+}
+
+async function _getAllStudiesFromOrthanc() {
+  const authHeader = `Basic ${window.btoa('orthanc:orthanc')}`;
+  const studiesResponse = await fetch('/pacs/studies', {
+    headers: {
+      Authorization: authHeader,
+    },
+  });
+  if (!studiesResponse.ok) {
+    throw new Error(`Unable to list Orthanc studies: ${studiesResponse.status}`);
+  }
+
+  const studyIds = await studiesResponse.json();
+  const studyDetails = await Promise.all(
+    studyIds.map(async studyId => {
+      const response = await fetch(`/pacs/studies/${studyId}`, {
+        headers: {
+          Authorization: authHeader,
+        },
+      });
+      if (!response.ok) {
+        return null;
+      }
+
+      const study = await response.json();
+      const main = study?.MainDicomTags || {};
+      if (main.StudyInstanceUID === GENERATIVE_AI_PLACEHOLDER_STUDY_UID) {
+        return null;
+      }
+
+      const patient = study?.PatientMainDicomTags || {};
+      const series = Array.isArray(study?.Series) ? study.Series.length : 0;
+
+      return {
+        accession: main.AccessionNumber || '',
+        date: main.StudyDate || '',
+        description: main.StudyDescription || '',
+        instances: series,
+        modalities: Array.isArray(main.ModalitiesInStudy)
+          ? main.ModalitiesInStudy.join('\\')
+          : main.ModalitiesInStudy || '',
+        mrn: patient.PatientID || '',
+        patientName: patient.PatientName || '',
+        studyInstanceUid: main.StudyInstanceUID || '',
+        time: main.StudyTime || '',
+      };
+    })
+  );
+
+  return studyDetails.filter(Boolean);
 }
 
 function _mapDisplaySets(displaySets, thumbnailImageSrcMap) {
