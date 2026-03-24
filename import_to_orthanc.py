@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import array
 import json
+import re
 import time
 import sys
 from datetime import datetime
@@ -317,6 +318,33 @@ def _resolve_report_text(study_dir: Path, image_path: Path) -> str:
     raise FileNotFoundError(f"Report text not found for image {image_path}")
 
 
+def _split_report_text(report_text: str) -> tuple[str, str]:
+    text = report_text.strip()
+    if not text:
+        return "", ""
+
+    normalized = re.sub(r"\s+", " ", text)
+
+    match = re.search(
+        r"findings\s*:\s*(?P<findings>.*?)\s*impressions?\s*:\s*(?P<impression>.*)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match.group("findings").strip(), match.group("impression").strip()
+
+    impression_only = re.search(
+        r"impressions?\s*:\s*(?P<impression>.*)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if impression_only:
+        impression = impression_only.group("impression").strip()
+        return impression, impression
+
+    return text, text
+
+
 def _iter_txt_rows(
     input_root: Path,
     allowed_datasets: set[str],
@@ -333,14 +361,15 @@ def _iter_txt_rows(
                     continue
                 seen_dirs.add(study_dir)
                 report_text = _resolve_report_text(study_dir, image_path)
+                findings_text, impression_text = _split_report_text(report_text)
                 study_name = _study_name_from_dir(study_dir)
                 yield study_dir, "", {
                     "study_id": study_name,
                     "subject_id": study_name,
                     "dicom_id": image_path.stem,
                     "image_path": str(image_path),
-                    "report": report_text,
-                    "impression": report_text,
+                    "report": findings_text,
+                    "impression": impression_text,
                     "ViewPosition": "",
                 }
             continue
@@ -353,14 +382,15 @@ def _iter_txt_rows(
                     continue
                 image_path = jpgs[0]
                 report_text = _resolve_report_text(study_dir, image_path)
+                findings_text, impression_text = _split_report_text(report_text)
                 study_name = _study_name_from_dir(study_dir)
                 yield study_dir, group_dir.name, {
                     "study_id": study_name,
                     "subject_id": study_name,
                     "dicom_id": image_path.stem,
                     "image_path": str(image_path),
-                    "report": report_text,
-                    "impression": report_text,
+                    "report": findings_text,
+                    "impression": impression_text,
                     "ViewPosition": "",
                 }
 
