@@ -2,7 +2,6 @@ import { id } from './id';
 import ReportSidePanelComponent from './ReportSidePanelComponent.tsx';
 import GenerativeAIComponent from './GenerativeAIComponent.tsx';
 import ViewerReportPanelComponent from './ViewerReportPanelComponent.tsx';
-import StudySelectorPanel from './components/StudySelectorPanel.tsx';
 import genAiMprProtocol from './hangingprotocols/genAiMpr.ts';
 import twoOneProtocol from './hangingprotocols/twoOne.ts';
 /**
@@ -62,17 +61,6 @@ export default {
         iconLabel: 'Report',
         label: 'Report',
         component: ViewerReportPanelComponent.bind(null, {
-          commandsManager,
-          extensionManager,
-          servicesManager,
-        }),
-      },
-      {
-        name: 'study-selector-panel',
-        iconName: 'tab-patient-info',
-        iconLabel: 'Studies',
-        label: 'Studies',
-        component: StudySelectorPanel.bind(null, {
           commandsManager,
           extensionManager,
           servicesManager,
