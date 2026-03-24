@@ -373,7 +373,7 @@ def _iter_txt_rows(
                 findings_text, impression_text = _split_report_text(report_text)
                 study_name = _study_name_from_dir(study_dir)
                 dataset_counts[dataset_dir.name] += 1
-                display_name = f"{dataset_dir.name} {dataset_counts[dataset_dir.name]}"
+                display_name = f"{dataset_dir.name}-{dataset_counts[dataset_dir.name]}"
                 yield study_dir, "", {
                     "study_id": study_name,
                     "display_name": display_name,
@@ -397,7 +397,7 @@ def _iter_txt_rows(
                 findings_text, impression_text = _split_report_text(report_text)
                 study_name = _study_name_from_dir(study_dir)
                 dataset_counts[dataset_dir.name] += 1
-                display_name = f"{dataset_dir.name} {dataset_counts[dataset_dir.name]}"
+                display_name = f"{group_dir.name}-{dataset_dir.name}-{dataset_counts[dataset_dir.name]}"
                 yield study_dir, group_dir.name, {
                     "study_id": study_name,
                     "display_name": display_name,
