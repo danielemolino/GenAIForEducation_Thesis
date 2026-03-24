@@ -11,6 +11,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
   const [reportImpressionsData, setReportImpressionsData] = useState('');
   const [reportGroupData, setReportGroupData] = useState('None');
   const [importedGroupMap, setImportedGroupMap] = useState({});
+  const [isImportedReadOnly, setIsImportedReadOnly] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [status, setStatus] = useState('');
   const loadRequestRef = useRef(0);
@@ -25,6 +26,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
   const LOCAL_GROUPS_STORAGE_KEY = 'studyGroupByUID';
   const GENERATIVE_AI_PLACEHOLDER_STUDY_UID =
     '1.2.826.0.1.3680043.8.498.92334923612841918328708913924036869452';
+  const allowImportedReportEditing = window?.config?.allowImportedReportEditing !== false;
 
   const getLocalStudyGroup = studyInstanceUID => {
     if (!studyInstanceUID) {
@@ -539,6 +541,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
 
       if (!studyInstanceUID && !seriesInstanceUID) {
         setOrthancStudyID('');
+        setIsImportedReadOnly(false);
         setStatus('Select an image to load report.');
         return;
       }
@@ -546,6 +549,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
       // Placeholder study must always open with empty report fields.
       if (isPlaceholderStudy) {
         setOrthancStudyID('');
+        setIsImportedReadOnly(false);
         setReportGroupData('None');
         return;
       }
@@ -559,6 +563,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
       setOrthancStudyID(studyID || '');
 
       if (!studyID) {
+        setIsImportedReadOnly(false);
         setStatus('Unable to resolve study in Orthanc.');
         return;
       }
@@ -585,6 +590,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
         importedGroup === 'A' ||
         importedGroup === 'B' ||
         isImportedSampleDisplaySet(activeDisplaySet);
+      setIsImportedReadOnly(isImportedSample && !allowImportedReportEditing);
       setReportPromptData(isImportedSample ? '' : studyPrompt || seriesPrompt || '');
       setReportFindingsData(findings || '');
       setReportImpressionsData(impressions || '');
@@ -605,7 +611,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
     } catch (error) {
       setStatus('Metadata panel error (viewer rendering continues).');
     }
-  }, [displaySetService, viewportGridService, importedGroupMap]);
+  }, [allowImportedReportEditing, displaySetService, viewportGridService, importedGroupMap]);
 
   useEffect(() => {
     let cancelled = false;
@@ -725,6 +731,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
           rows={10}
           className="text-white text-[14px] leading-[1.2] border-primary-main bg-black align-top transition duration-300 appearance-none border border-inputfield-main focus:border-inputfield-focus focus:outline-none disabled:border-inputfield-disabled rounded w-full py-2 px-3 text-sm placeholder-inputfield-placeholder leading-tight mb-4"
           value={reportFindingsData}
+          disabled={isImportedReadOnly}
           onChange={event => setReportFindingsData(event.target.value)}
           placeholder="Enter findings..."
         />
@@ -734,6 +741,7 @@ function TextArea({ servicesManager, showPrompt = true }) {
           rows={10}
           className="text-white text-[14px] leading-[1.2] border-primary-main bg-black align-top transition duration-300 appearance-none border border-inputfield-main focus:border-inputfield-focus focus:outline-none disabled:border-inputfield-disabled rounded w-full py-2 px-3 text-sm placeholder-inputfield-placeholder leading-tight"
           value={reportImpressionsData}
+          disabled={isImportedReadOnly}
           onChange={event => setReportImpressionsData(event.target.value)}
           placeholder="Enter impressions..."
         />
@@ -753,13 +761,18 @@ function TextArea({ servicesManager, showPrompt = true }) {
           <button
             type="button"
             onClick={saveReport}
-            disabled={isSaving}
+            disabled={isSaving || isImportedReadOnly}
             className="h-[32px] rounded bg-primary-main px-4 text-white disabled:opacity-60"
           >
             {isSaving ? 'Saving...' : 'Save'}
           </button>
         </div>
 
+        {isImportedReadOnly ? (
+          <div className="text-center text-xs text-[#94a3b8] mb-2">
+            Preloaded reports are read-only in this deployment.
+          </div>
+        ) : null}
         {status ? <div className="text-center text-xs text-[#94a3b8]">{status}</div> : null}
       </div>
     </div>

@@ -13,6 +13,7 @@ window.config = {
   showCPUFallbackMessage: true,
   showLoadingIndicator: true,
   strictZSpacingForVolumeViewport: true,
+  allowImportedReportEditing: false,
   investigationalUseDialog: {
     option: 'never',
   },

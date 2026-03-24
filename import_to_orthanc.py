@@ -78,6 +78,7 @@ def _make_base_dataset(
     patient_name: str,
     patient_id: str,
     study_name: str,
+    display_name: Optional[str] = None,
 ) -> "FileDataset":
     from pydicom.dataset import Dataset, FileDataset
     from pydicom.uid import (
@@ -104,10 +105,12 @@ def _make_base_dataset(
     ds.SeriesInstanceUID = series_uid
     ds.Modality = "DX"
 
+    visible_name = display_name or study_name
+
     ds.PatientName = patient_name
     ds.PatientID = patient_id
-    ds.StudyDescription = study_name
-    ds.SeriesDescription = study_name
+    ds.StudyDescription = visible_name
+    ds.SeriesDescription = visible_name
     ds.AccessionNumber = str(study_name)[:16]
     ds.StudyID = str(study_name)[:16]
 
@@ -137,7 +140,8 @@ def _build_dicom_from_jpg(row: Dict[str, str], image_path: Path, output_dir: Pat
     series_uid = generate_uid()
     sop_uid = generate_uid()
     study_name = row["study_id"]
-    patient_name = _sanitize_patient_name(study_name)
+    display_name = row.get("display_name") or study_name
+    patient_name = _sanitize_patient_name(display_name)
     patient_id = row.get("subject_id") or study_name
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -150,6 +154,7 @@ def _build_dicom_from_jpg(row: Dict[str, str], image_path: Path, output_dir: Pat
         patient_name=patient_name,
         patient_id=patient_id,
         study_name=study_name,
+        display_name=display_name,
     )
 
     ds.SamplesPerPixel = 1
@@ -201,6 +206,7 @@ def _create_empty_xray_placeholder_dicom(output_dir: Path) -> Path:
         patient_name="GENAI_PLACEHOLDER",
         patient_id="GENAI0001",
         study_name=study_name,
+        display_name=study_name,
     )
 
     pixels = array.array("H", [0] * (512 * 512))
@@ -350,9 +356,12 @@ def _iter_txt_rows(
     allowed_datasets: set[str],
     include_all_groups: bool,
 ) -> Iterable[tuple[Path, str, Dict[str, str]]]:
+    dataset_counts: Dict[str, int] = {}
+
     for dataset_dir in sorted(p for p in input_root.iterdir() if p.is_dir()):
         if dataset_dir.name not in allowed_datasets:
             continue
+        dataset_counts.setdefault(dataset_dir.name, 0)
         if include_all_groups:
             seen_dirs = set()
             for image_path in sorted(dataset_dir.rglob("*.jpg")):
@@ -363,8 +372,11 @@ def _iter_txt_rows(
                 report_text = _resolve_report_text(study_dir, image_path)
                 findings_text, impression_text = _split_report_text(report_text)
                 study_name = _study_name_from_dir(study_dir)
+                dataset_counts[dataset_dir.name] += 1
+                display_name = f"{dataset_dir.name} {dataset_counts[dataset_dir.name]}"
                 yield study_dir, "", {
                     "study_id": study_name,
+                    "display_name": display_name,
                     "subject_id": study_name,
                     "dicom_id": image_path.stem,
                     "image_path": str(image_path),
@@ -384,8 +396,11 @@ def _iter_txt_rows(
                 report_text = _resolve_report_text(study_dir, image_path)
                 findings_text, impression_text = _split_report_text(report_text)
                 study_name = _study_name_from_dir(study_dir)
+                dataset_counts[dataset_dir.name] += 1
+                display_name = f"{dataset_dir.name} {dataset_counts[dataset_dir.name]}"
                 yield study_dir, group_dir.name, {
                     "study_id": study_name,
+                    "display_name": display_name,
                     "subject_id": study_name,
                     "dicom_id": image_path.stem,
                     "image_path": str(image_path),
