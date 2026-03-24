@@ -14,7 +14,8 @@ Supported layouts under --input-root:
    or
    to_load/<dataset>/<group>/<study_id>/<image>.txt
 
-Only datasets Healthy, Edema and Pneumo are imported, and only groups A/B.
+By default only groups A/B are imported. With --include-all-groups, all study
+folders under the selected datasets are imported and Group is left empty.
 """
 
 from __future__ import annotations
@@ -171,11 +172,13 @@ def _build_dicom_from_jpg(row: Dict[str, str], image_path: Path, output_dir: Pat
     findings_value = "" if same_text else report
     impressions_value = impression or report
 
+    group_value = (row.get("group") or "").strip()
+
     ds.StudyComments = findings_value
-    ds.ImageComments = f"Group={row.get('group') or ''}"
+    ds.ImageComments = f"Group={group_value}" if group_value else ""
     ds.add_new((0x0011, 0x0010), "LO", "GenAIForEducation")
     ds.add_new((0x0011, 0x1001), "LT", findings_value)
-    ds.add_new((0x0011, 0x1002), "LO", row.get("group") or "")
+    ds.add_new((0x0011, 0x1002), "LO", group_value)
     ds.add_new((0x0011, 0x1003), "LO", row.get("study_id") or "")
     ds.add_new((0x0011, 0x1004), "LT", impressions_value)
     ds.PixelData = pixel_buffer.tobytes()
@@ -314,9 +317,32 @@ def _resolve_report_text(study_dir: Path, image_path: Path) -> str:
     raise FileNotFoundError(f"Report text not found for image {image_path}")
 
 
-def _iter_txt_rows(input_root: Path, allowed_datasets: set[str]) -> Iterable[tuple[Path, str, Dict[str, str]]]:
+def _iter_txt_rows(
+    input_root: Path,
+    allowed_datasets: set[str],
+    include_all_groups: bool,
+) -> Iterable[tuple[Path, str, Dict[str, str]]]:
     for dataset_dir in sorted(p for p in input_root.iterdir() if p.is_dir()):
         if dataset_dir.name not in allowed_datasets:
+            continue
+        if include_all_groups:
+            seen_dirs = set()
+            for image_path in sorted(dataset_dir.rglob("*.jpg")):
+                study_dir = image_path.parent
+                if study_dir in seen_dirs:
+                    continue
+                seen_dirs.add(study_dir)
+                report_text = _resolve_report_text(study_dir, image_path)
+                study_name = _study_name_from_dir(study_dir)
+                yield study_dir, "", {
+                    "study_id": study_name,
+                    "subject_id": study_name,
+                    "dicom_id": image_path.stem,
+                    "image_path": str(image_path),
+                    "report": report_text,
+                    "impression": report_text,
+                    "ViewPosition": "",
+                }
             continue
         for group_dir in sorted(p for p in dataset_dir.iterdir() if p.is_dir()):
             if group_dir.name not in ALLOWED_GROUPS:
@@ -368,6 +394,11 @@ def main() -> int:
         default="Healthy,Edema,Pneumo",
         help="Comma-separated dataset names to import, e.g. Other or Healthy,Edema,Pneumo.",
     )
+    parser.add_argument(
+        "--include-all-groups",
+        action="store_true",
+        help="Import all studies under the selected datasets without restricting to A/B, and leave Group empty.",
+    )
     args = parser.parse_args()
     allowed_datasets = {item.strip() for item in args.datasets.split(",") if item.strip()}
     if not allowed_datasets:
@@ -388,7 +419,11 @@ def main() -> int:
     failures = 0
     generated_group_map: Dict[str, str] = {}
 
-    for source_path, group, row in _iter_txt_rows(args.input_root, allowed_datasets):
+    for source_path, group, row in _iter_txt_rows(
+        args.input_root,
+        allowed_datasets,
+        args.include_all_groups,
+    ):
         if args.limit and imported >= args.limit:
             break
 
@@ -417,7 +452,8 @@ def main() -> int:
             import pydicom
 
             ds = pydicom.dcmread(str(dicom_path), stop_before_pixels=True)
-            generated_group_map[str(ds.StudyInstanceUID)] = group
+            if group:
+                generated_group_map[str(ds.StudyInstanceUID)] = group
             orthanc_study_id = _resolve_study_id_from_uid(args.metadata_url, str(ds.StudyInstanceUID))
 
             if not args.skip_metadata:
@@ -429,10 +465,11 @@ def main() -> int:
                         _put_study_metadata(args.metadata_url, orthanc_study_id, "1024", findings_value)
                     _put_study_metadata(args.metadata_url, orthanc_study_id, "Impressions", impressions_value)
                     _put_study_metadata(args.metadata_url, orthanc_study_id, "1025", impressions_value)
-                    try:
-                        _put_study_metadata(args.metadata_url, orthanc_study_id, "Group", group)
-                    except Exception:
-                        _put_study_metadata(args.metadata_url, orthanc_study_id, "1027", group)
+                    if group:
+                        try:
+                            _put_study_metadata(args.metadata_url, orthanc_study_id, "Group", group)
+                        except Exception:
+                            _put_study_metadata(args.metadata_url, orthanc_study_id, "1027", group)
                 except Exception as exc:
                     print(
                         f"WARNING {study_name}: Orthanc metadata write failed, "
