@@ -13,6 +13,8 @@ const ohif = {
   sopClassHandler: '@ohif/extension-default.sopClassHandlerModule.stack',
   measurements: '@ohif/extension-default.panelModule.measure',
   thumbnailList: '@ohif/extension-default.panelModule.seriesList',
+  reportPanel: 'text-input-extension.panelModule.viewer-report-panel',
+  studySelectorPanel: 'text-input-extension.panelModule.study-selector-panel',
 };
 
 const cs3d = {
@@ -40,6 +42,7 @@ const extensionDependencies = {
   '@ohif/extension-cornerstone-dicom-sr': '^3.0.0',
   '@ohif/extension-dicom-pdf': '^3.0.1',
   '@ohif/extension-dicom-video': '^3.0.1',
+  'text-input-extension': '^1.0.0',
 };
 
 function modeFactory({ modeConfiguration }) {
@@ -137,8 +140,8 @@ function modeFactory({ modeConfiguration }) {
             id: ohif.layout,
             props: {
               // TODO: Should be optional, or required to pass empty array for slots?
-              leftPanels: [ohif.thumbnailList],
-              rightPanels: [ohif.measurements],
+              leftPanels: [ohif.thumbnailList, ohif.studySelectorPanel],
+              rightPanels: [ohif.measurements, ohif.reportPanel],
               viewports: [
                 {
                   namespace: cs3d.viewport,
