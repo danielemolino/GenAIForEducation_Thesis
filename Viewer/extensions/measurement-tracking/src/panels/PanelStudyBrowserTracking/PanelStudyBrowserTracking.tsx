@@ -7,6 +7,8 @@ import { StudyBrowser, useImageViewer, useViewportGrid, Dialog, ButtonEnums } fr
 import { useTrackedMeasurements } from '../../getContextModule';
 
 const { formatDate } = utils;
+const GENERATIVE_AI_PLACEHOLDER_STUDY_UID =
+  '1.2.826.0.1.3680043.8.498.92334923612841918328708913924036869452';
 
 /**
  *
@@ -76,11 +78,12 @@ function PanelStudyBrowserTracking({
 
   // ~~ studyDisplayList
   useEffect(() => {
-    // Fetch all studies for the patient in each primary study
-    async function fetchStudiesForPatient(StudyInstanceUID) {
+    let cancelled = false;
+
+    async function fetchAvailableStudies(primaryStudyInstanceUID) {
       // current study qido
       const qidoForStudyUID = await dataSource.query.studies.search({
-        studyInstanceUid: StudyInstanceUID,
+        studyInstanceUid: primaryStudyInstanceUID,
       });
 
       if (!qidoForStudyUID?.length) {
@@ -88,17 +91,21 @@ function PanelStudyBrowserTracking({
         throw new Error('Invalid study URL');
       }
 
-      let qidoStudiesForPatient = qidoForStudyUID;
+      let availableStudies = qidoForStudyUID;
 
-      // try to fetch the prior studies based on the patientID if the
-      // server can respond.
+      // Prefer the full Orthanc catalog so the standard study browser can
+      // expose other studies from the DB in the "All" tab.
       try {
-        qidoStudiesForPatient = await getStudiesForPatientByMRN(qidoForStudyUID);
+        availableStudies = await _getAllStudiesFromOrthanc();
       } catch (error) {
-        console.warn(error);
+        try {
+          availableStudies = await getStudiesForPatientByMRN(qidoForStudyUID);
+        } catch (fallbackError) {
+          console.warn(fallbackError);
+        }
       }
 
-      const mappedStudies = _mapDataSourceStudies(qidoStudiesForPatient);
+      const mappedStudies = _mapDataSourceStudies(availableStudies);
       const actuallyMappedStudies = mappedStudies.map(qidoStudy => {
         return {
           studyInstanceUid: qidoStudy.StudyInstanceUID,
@@ -109,20 +116,26 @@ function PanelStudyBrowserTracking({
         };
       });
 
-      setStudyDisplayList(prevArray => {
-        const ret = [...prevArray];
-        for (const study of actuallyMappedStudies) {
-          if (!prevArray.find(it => it.studyInstanceUid === study.studyInstanceUid)) {
-            ret.push(study);
+      if (!cancelled) {
+        setStudyDisplayList(prevArray => {
+          const ret = [...prevArray];
+          for (const study of actuallyMappedStudies) {
+            if (!ret.find(it => it.studyInstanceUid === study.studyInstanceUid)) {
+              ret.push(study);
+            }
           }
-        }
-        return ret;
-      });
+          return ret;
+        });
+      }
     }
 
-    StudyInstanceUIDs.forEach(sid => fetchStudiesForPatient(sid));
+    StudyInstanceUIDs.forEach(sid => fetchAvailableStudies(sid).catch(error => console.warn(error)));
+
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [StudyInstanceUIDs, getStudiesForPatientByMRN]);
+  }, [StudyInstanceUIDs, dataSource, getStudiesForPatientByMRN, navigate, t]);
 
   // ~~ Initial Thumbnails
   useEffect(() => {
@@ -442,18 +455,47 @@ function getImageIdForThumbnail(displaySet: any, imageIds: any) {
  */
 function _mapDataSourceStudies(studies) {
   return studies.map(study => {
+    const main = study?.MainDicomTags || {};
+    const patient = study?.PatientMainDicomTags || {};
     // TODO: Why does the data source return in this format?
     return {
-      AccessionNumber: study.accession,
-      StudyDate: study.date,
-      StudyDescription: study.description,
-      NumInstances: study.instances,
-      ModalitiesInStudy: study.modalities,
-      PatientID: study.mrn,
-      PatientName: study.patientName,
-      StudyInstanceUID: study.studyInstanceUid,
-      StudyTime: study.time,
+      AccessionNumber: study.accession || main.AccessionNumber || '',
+      StudyDate: study.date || main.StudyDate || '',
+      StudyDescription: study.description || main.StudyDescription || '',
+      NumInstances: study.instances || study.NumberOfStudyRelatedInstances || 0,
+      ModalitiesInStudy: study.modalities || main.ModalitiesInStudy || '',
+      PatientID: study.mrn || patient.PatientID || '',
+      PatientName: study.patientName || patient.PatientName || '',
+      StudyInstanceUID: study.studyInstanceUid || main.StudyInstanceUID || '',
+      StudyTime: study.time || main.StudyTime || '',
     };
+  });
+}
+
+async function _getAllStudiesFromOrthanc() {
+  const authHeader = `Basic ${window.btoa('orthanc:orthanc')}`;
+  const studiesResponse = await fetch('/pacs/tools/find', {
+    method: 'POST',
+    headers: {
+      Authorization: authHeader,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      Level: 'Study',
+      Expand: true,
+      Query: {},
+    }),
+  });
+
+  if (!studiesResponse.ok) {
+    throw new Error(`Unable to query Orthanc studies: ${studiesResponse.status}`);
+  }
+
+  const studyDetails = await studiesResponse.json();
+
+  return studyDetails.filter(study => {
+    const uid = study?.MainDicomTags?.StudyInstanceUID;
+    return uid && uid !== GENERATIVE_AI_PLACEHOLDER_STUDY_UID;
   });
 }
 
