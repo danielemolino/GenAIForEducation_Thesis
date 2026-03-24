@@ -99,15 +99,9 @@ function TextArea({ servicesManager, showPrompt = true }) {
     return lastResponse;
   };
 
-  const getActiveDisplaySet = () => {
-    const activeViewportId = viewportGridService.getActiveViewportId();
-    const viewportState = viewportGridService.getState();
-    const viewports = viewportState?.viewports;
-    const activeViewport =
-      typeof viewports?.get === 'function'
-        ? viewports.get(activeViewportId)
-        : viewports?.[activeViewportId];
-    const activeDisplaySetUID = activeViewport?.displaySetInstanceUIDs?.[0];
+  const getActiveDisplaySet = (viewportIdOverride = null) => {
+    const viewportId = viewportIdOverride || viewportGridService.getActiveViewportId();
+    const activeDisplaySetUID = viewportGridService.getDisplaySetsUIDsForViewport(viewportId)?.[0];
 
     if (activeDisplaySetUID) {
       return displaySetService.getDisplaySetByUID(activeDisplaySetUID);
@@ -517,10 +511,10 @@ function TextArea({ servicesManager, showPrompt = true }) {
     };
   };
 
-  const loadReportForActiveStudy = useCallback(async () => {
+  const loadReportForActiveStudy = useCallback(async viewportIdOverride => {
     try {
       const requestId = ++loadRequestRef.current;
-      const activeDisplaySet = getActiveDisplaySet();
+      const activeDisplaySet = getActiveDisplaySet(viewportIdOverride);
       const isGenerativeRoute = window.location.pathname.includes('/generative-ai/');
       const urlStudyUID = getStudyUIDFromUrl();
       const studyInstanceUID = isGenerativeRoute
@@ -648,18 +642,18 @@ function TextArea({ servicesManager, showPrompt = true }) {
     );
     const viewportSub = viewportGridService.subscribe(
       viewportGridService.EVENTS.ACTIVE_VIEWPORT_ID_CHANGED,
-      () => loadReportForActiveStudy()
+      event => loadReportForActiveStudy(event?.viewportId)
     );
     const viewportDataSub = cornerstoneViewportService?.subscribe
       ? cornerstoneViewportService.subscribe(
           cornerstoneViewportService.EVENTS.VIEWPORT_DATA_CHANGED,
-          () => loadReportForActiveStudy()
+          event => loadReportForActiveStudy(event?.viewportId)
         )
       : null;
     const viewportVolumesSub = cornerstoneViewportService?.subscribe
       ? cornerstoneViewportService.subscribe(
           cornerstoneViewportService.EVENTS.VIEWPORT_VOLUMES_CHANGED,
-          () => loadReportForActiveStudy()
+          event => loadReportForActiveStudy(event?.viewportId)
         )
       : null;
 
