@@ -13,6 +13,7 @@ const ohif = {
   layout: '@ohif/extension-default.layoutTemplateModule.viewerLayout',
   sopClassHandler: '@ohif/extension-default.sopClassHandlerModule.stack',
   thumbnailList: '@ohif/extension-default.panelModule.seriesList',
+  studySelectorPanel: 'text-input-extension.panelModule.study-selector-panel',
 };
 
 const tracked = {
@@ -182,7 +183,7 @@ function modeFactory({ modeConfiguration }) {
           return {
             id: ohif.layout,
             props: {
-              leftPanels: [tracked.thumbnailList],
+              leftPanels: [tracked.thumbnailList, ohif.studySelectorPanel],
               rightPanels: [
                 dicomSeg.panel,
                 tracked.measurements,
