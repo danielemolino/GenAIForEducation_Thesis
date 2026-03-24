@@ -44,6 +44,7 @@ function PanelStudyBrowserTracking({
     ...StudyInstanceUIDs,
   ]);
   const [studyDisplayList, setStudyDisplayList] = useState([]);
+  const [importedGroupMap, setImportedGroupMap] = useState({});
   const [displaySets, setDisplaySets] = useState([]);
   const [thumbnailImageSrcMap, setThumbnailImageSrcMap] = useState({});
   const [jumpToDisplaySet, setJumpToDisplaySet] = useState(null);
@@ -105,7 +106,17 @@ function PanelStudyBrowserTracking({
         }
       }
 
-      const mappedStudies = _mapDataSourceStudies(availableStudies);
+      const primaryGroup = importedGroupMap?.[primaryStudyInstanceUID];
+      const filteredStudies =
+        primaryGroup === 'A' || primaryGroup === 'B'
+          ? availableStudies.filter(study => {
+              const studyUID =
+                study?.studyInstanceUid || study?.MainDicomTags?.StudyInstanceUID || '';
+              return importedGroupMap?.[studyUID] === primaryGroup;
+            })
+          : availableStudies;
+
+      const mappedStudies = _mapDataSourceStudies(filteredStudies);
       const actuallyMappedStudies = mappedStudies.map(qidoStudy => {
         return {
           studyInstanceUid: qidoStudy.StudyInstanceUID,
@@ -135,7 +146,32 @@ function PanelStudyBrowserTracking({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [StudyInstanceUIDs, dataSource, getStudiesForPatientByMRN, navigate, t]);
+  }, [StudyInstanceUIDs, dataSource, getStudiesForPatientByMRN, importedGroupMap, navigate, t]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadGeneratedGroupMap() {
+      try {
+        const response = await fetch('/study_groups.generated.json', { cache: 'no-store' });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        if (!cancelled && data && typeof data === 'object') {
+          setImportedGroupMap(data);
+        }
+      } catch (error) {
+        // Ignore missing group map.
+      }
+    }
+
+    loadGeneratedGroupMap();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ~~ Initial Thumbnails
   useEffect(() => {
