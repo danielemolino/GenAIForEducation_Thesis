@@ -139,6 +139,26 @@ function TextArea({ servicesManager, showPrompt = true }) {
 
     return '';
   };
+
+  const isImportedSampleDisplaySet = activeDisplaySet => {
+    const firstImage = activeDisplaySet?.images?.[0];
+    const candidates = [
+      activeDisplaySet?.Manufacturer,
+      activeDisplaySet?.instance?.Manufacturer,
+      firstImage?.Manufacturer,
+      firstImage?.manufacturer,
+      activeDisplaySet?.instance?.['00110010'],
+      firstImage?.['00110010'],
+    ];
+
+    return candidates.some(value => {
+      if (typeof value !== 'string') {
+        return false;
+      }
+      const normalized = value.trim();
+      return normalized === 'import_to_orthanc.py' || normalized === 'GenAIForEducation';
+    });
+  };
   const getStudyUIDFromUrl = () => {
     try {
       const currentUrl = new URL(window.location.href);
@@ -561,7 +581,10 @@ function TextArea({ servicesManager, showPrompt = true }) {
       }
 
       const importedGroup = importedGroupMap?.[studyInstanceUID];
-      const isImportedSample = importedGroup === 'A' || importedGroup === 'B';
+      const isImportedSample =
+        importedGroup === 'A' ||
+        importedGroup === 'B' ||
+        isImportedSampleDisplaySet(activeDisplaySet);
       setReportPromptData(isImportedSample ? '' : studyPrompt || seriesPrompt || '');
       setReportFindingsData(findings || '');
       setReportImpressionsData(impressions || '');
