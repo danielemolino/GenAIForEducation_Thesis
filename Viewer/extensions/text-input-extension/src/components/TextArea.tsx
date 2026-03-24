@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 function TextArea({ servicesManager, showPrompt = true }) {
-  const { displaySetService, viewportGridService } = servicesManager.services;
+  const { displaySetService, viewportGridService, cornerstoneViewportService } =
+    servicesManager.services;
 
   const [orthancStudyID, setOrthancStudyID] = useState('');
   const [activeStudyInstanceUID, setActiveStudyInstanceUID] = useState('');
@@ -649,12 +650,32 @@ function TextArea({ servicesManager, showPrompt = true }) {
       viewportGridService.EVENTS.ACTIVE_VIEWPORT_ID_CHANGED,
       () => loadReportForActiveStudy()
     );
+    const viewportDataSub = cornerstoneViewportService?.subscribe
+      ? cornerstoneViewportService.subscribe(
+          cornerstoneViewportService.EVENTS.VIEWPORT_DATA_CHANGED,
+          () => loadReportForActiveStudy()
+        )
+      : null;
+    const viewportVolumesSub = cornerstoneViewportService?.subscribe
+      ? cornerstoneViewportService.subscribe(
+          cornerstoneViewportService.EVENTS.VIEWPORT_VOLUMES_CHANGED,
+          () => loadReportForActiveStudy()
+        )
+      : null;
 
     return () => {
       displaySetSub.unsubscribe();
       viewportSub.unsubscribe();
+      viewportDataSub?.unsubscribe?.();
+      viewportVolumesSub?.unsubscribe?.();
     };
-  }, [displaySetService, viewportGridService, loadReportForActiveStudy, importedGroupMap]);
+  }, [
+    cornerstoneViewportService,
+    displaySetService,
+    viewportGridService,
+    loadReportForActiveStudy,
+    importedGroupMap,
+  ]);
 
   const saveReport = async () => {
     const isGenerativeRoute = window.location.pathname.includes('/generative-ai/');
