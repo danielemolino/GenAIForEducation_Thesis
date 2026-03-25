@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import PropTypes from 'prop-types';
@@ -40,6 +40,7 @@ function PanelStudyBrowserTracking({
     useViewportGrid();
   const [trackedMeasurements, sendTrackedMeasurementsEvent] = useTrackedMeasurements();
   const [activeTabName, setActiveTabName] = useState('primary');
+  const [groupFilter, setGroupFilter] = useState('All');
   const [expandedStudyInstanceUIDs, setExpandedStudyInstanceUIDs] = useState([
     ...StudyInstanceUIDs,
   ]);
@@ -48,6 +49,7 @@ function PanelStudyBrowserTracking({
   const [displaySets, setDisplaySets] = useState([]);
   const [thumbnailImageSrcMap, setThumbnailImageSrcMap] = useState({});
   const [jumpToDisplaySet, setJumpToDisplaySet] = useState(null);
+  const initializedGroupFilterRef = useRef(false);
 
   const onDoubleClickThumbnailHandler = displaySetInstanceUID => {
     let updatedViewports = [];
@@ -107,12 +109,18 @@ function PanelStudyBrowserTracking({
       }
 
       const primaryGroup = importedGroupMap?.[primaryStudyInstanceUID];
+      const activeGroupFilter =
+        groupFilter === 'A' || groupFilter === 'B'
+          ? groupFilter
+          : primaryGroup === 'A' || primaryGroup === 'B'
+            ? primaryGroup
+            : 'All';
       const filteredStudies =
-        primaryGroup === 'A' || primaryGroup === 'B'
+        activeGroupFilter === 'A' || activeGroupFilter === 'B'
           ? availableStudies.filter(study => {
               const studyUID =
                 study?.studyInstanceUid || study?.MainDicomTags?.StudyInstanceUID || '';
-              return importedGroupMap?.[studyUID] === primaryGroup;
+              return importedGroupMap?.[studyUID] === activeGroupFilter;
             })
           : availableStudies;
 
@@ -128,15 +136,7 @@ function PanelStudyBrowserTracking({
       });
 
       if (!cancelled) {
-        setStudyDisplayList(prevArray => {
-          const ret = [...prevArray];
-          for (const study of actuallyMappedStudies) {
-            if (!ret.find(it => it.studyInstanceUid === study.studyInstanceUid)) {
-              ret.push(study);
-            }
-          }
-          return ret;
-        });
+        setStudyDisplayList(actuallyMappedStudies);
       }
     }
 
@@ -146,7 +146,7 @@ function PanelStudyBrowserTracking({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [StudyInstanceUIDs, dataSource, getStudiesForPatientByMRN, importedGroupMap, navigate, t]);
+  }, [StudyInstanceUIDs, dataSource, getStudiesForPatientByMRN, groupFilter, importedGroupMap, navigate, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -172,6 +172,18 @@ function PanelStudyBrowserTracking({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (initializedGroupFilterRef.current) {
+      return;
+    }
+    const primaryStudyUID = StudyInstanceUIDs?.[0];
+    const primaryGroup = importedGroupMap?.[primaryStudyUID];
+    if (primaryGroup === 'A' || primaryGroup === 'B') {
+      setGroupFilter(primaryGroup);
+      initializedGroupFilterRef.current = true;
+    }
+  }, [StudyInstanceUIDs, importedGroupMap]);
 
   // ~~ Initial Thumbnails
   useEffect(() => {
@@ -440,22 +452,41 @@ function PanelStudyBrowserTracking({
   };
 
   return (
-    <StudyBrowser
-      tabs={tabs}
-      servicesManager={servicesManager}
-      activeTabName={activeTabName}
-      expandedStudyInstanceUIDs={expandedStudyInstanceUIDs}
-      onClickStudy={_handleStudyClick}
-      onClickTab={clickedTabName => {
-        setActiveTabName(clickedTabName);
-      }}
-      onClickUntrack={displaySetInstanceUID => {
-        onClickUntrack(displaySetInstanceUID);
-      }}
-      onClickThumbnail={() => {}}
-      onDoubleClickThumbnail={onDoubleClickThumbnailHandler}
-      activeDisplaySetInstanceUIDs={activeViewportDisplaySetInstanceUIDs}
-    />
+    <>
+      <div className="bg-primary-dark border-secondary-light flex items-center justify-center gap-2 border-b px-4 py-2">
+        {['All', 'A', 'B'].map(value => {
+          const isActive = groupFilter === value;
+          return (
+            <button
+              key={value}
+              type="button"
+              className={`min-w-10 rounded px-3 py-1 text-sm ${
+                isActive ? 'bg-primary-main text-white' : 'bg-black text-white'
+              }`}
+              onClick={() => setGroupFilter(value)}
+            >
+              {value}
+            </button>
+          );
+        })}
+      </div>
+      <StudyBrowser
+        tabs={tabs}
+        servicesManager={servicesManager}
+        activeTabName={activeTabName}
+        expandedStudyInstanceUIDs={expandedStudyInstanceUIDs}
+        onClickStudy={_handleStudyClick}
+        onClickTab={clickedTabName => {
+          setActiveTabName(clickedTabName);
+        }}
+        onClickUntrack={displaySetInstanceUID => {
+          onClickUntrack(displaySetInstanceUID);
+        }}
+        onClickThumbnail={() => {}}
+        onDoubleClickThumbnail={onDoubleClickThumbnailHandler}
+        activeDisplaySetInstanceUIDs={activeViewportDisplaySetInstanceUIDs}
+      />
+    </>
   );
 }
 
