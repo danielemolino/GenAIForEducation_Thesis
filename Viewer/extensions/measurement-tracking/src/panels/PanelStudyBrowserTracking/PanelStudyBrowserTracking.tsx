@@ -108,23 +108,7 @@ function PanelStudyBrowserTracking({
         }
       }
 
-      const primaryGroup = importedGroupMap?.[primaryStudyInstanceUID];
-      const activeGroupFilter =
-        groupFilter === 'A' || groupFilter === 'B'
-          ? groupFilter
-          : primaryGroup === 'A' || primaryGroup === 'B'
-            ? primaryGroup
-            : 'All';
-      const filteredStudies =
-        activeGroupFilter === 'A' || activeGroupFilter === 'B'
-          ? availableStudies.filter(study => {
-              const studyUID =
-                study?.studyInstanceUid || study?.MainDicomTags?.StudyInstanceUID || '';
-              return importedGroupMap?.[studyUID] === activeGroupFilter;
-            })
-          : availableStudies;
-
-      const mappedStudies = _mapDataSourceStudies(filteredStudies);
+      const mappedStudies = _mapDataSourceStudies(availableStudies);
       const actuallyMappedStudies = mappedStudies.map(qidoStudy => {
         return {
           studyInstanceUid: qidoStudy.StudyInstanceUID,
@@ -132,6 +116,11 @@ function PanelStudyBrowserTracking({
           description: qidoStudy.StudyDescription,
           modalities: qidoStudy.ModalitiesInStudy,
           numInstances: qidoStudy.NumInstances,
+          group:
+            importedGroupMap?.[qidoStudy.StudyInstanceUID] ||
+            _inferGroupFromStudyText(qidoStudy.StudyDescription) ||
+            _inferGroupFromStudyText(qidoStudy.PatientName) ||
+            'None',
         };
       });
 
@@ -471,7 +460,7 @@ function PanelStudyBrowserTracking({
         })}
       </div>
       <StudyBrowser
-        tabs={tabs}
+        tabs={_filterTabsByGroup(tabs, groupFilter)}
         servicesManager={servicesManager}
         activeTabName={activeTabName}
         expandedStudyInstanceUIDs={expandedStudyInstanceUIDs}
@@ -788,6 +777,26 @@ function _createStudyBrowserTabs(
   ];
 
   return tabs;
+}
+
+function _inferGroupFromStudyText(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const trimmed = value.trim();
+  const match = /^([AB])[-_\s]/i.exec(trimmed);
+  return match ? match[1].toUpperCase() : '';
+}
+
+function _filterTabsByGroup(tabs, groupFilter) {
+  if (groupFilter !== 'A' && groupFilter !== 'B') {
+    return tabs;
+  }
+
+  return tabs.map(tab => ({
+    ...tab,
+    studies: tab.studies.filter(study => study.group === groupFilter),
+  }));
 }
 
 function _findTabAndStudyOfDisplaySet(displaySetInstanceUID, tabs) {
